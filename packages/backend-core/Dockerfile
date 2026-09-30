@@ -1,5 +1,12 @@
+# TARGETPLATFORM is injected by `docker buildx build --platform` or by the
+# `platform:` key in docker-compose.yaml.  Defaults to linux/amd64 so that
+# native modules (better-sqlite3, cpu-features, …) are always compiled for
+# the same architecture as the runtime image — required for EKS (amd64) and
+# avoids arm64/amd64 mismatch when building on Apple Silicon.
+ARG TARGETPLATFORM=linux/amd64
+
 # ── Stage 1: Build ────────────────────────────────────────────────────────────
-FROM node:22-bookworm-slim AS build
+FROM --platform=${TARGETPLATFORM} node:22-bookworm-slim AS build
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -20,8 +27,13 @@ RUN yarn install --immutable
 # Build only this backend service
 RUN yarn workspace backend-core build
 
+# Extract the bundle so dist/index.cjs.js is available as a plain file
+RUN tar xzf packages/backend-core/dist/bundle.tar.gz
+
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
-FROM node:22-bookworm-slim
+# Re-declare ARG so it is visible in this stage (ARG scope resets per stage).
+ARG TARGETPLATFORM=linux/amd64
+FROM --platform=${TARGETPLATFORM} node:22-bookworm-slim
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends libsqlite3-dev && \
@@ -30,9 +42,11 @@ RUN apt-get update && \
 USER node
 WORKDIR /app
 
-# Copy installed node_modules and built dist
+# Copy installed node_modules and the extracted built files
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
-COPY --from=build --chown=node:node /app/packages/backend-core/dist ./packages/backend-core/dist
+COPY --from=build --chown=node:node /app/package.json ./package.json
+COPY --from=build --chown=node:node /app/packages/backend-core/dist/index.cjs.js ./packages/backend-core/dist/index.cjs.js
+COPY --from=build --chown=node:node /app/packages/backend-core/dist/index.cjs.js.map ./packages/backend-core/dist/index.cjs.js.map
 COPY --from=build --chown=node:node /app/packages/backend-core/package.json ./packages/backend-core/package.json
 COPY --from=build --chown=node:node /app/packages/app/dist ./packages/app/dist
 COPY --from=build --chown=node:node /app/packages/app/package.json ./packages/app/package.json

@@ -5,7 +5,11 @@
 # and serves them via Nginx, which also acts as the API gateway routing /api/*
 # requests to the appropriate backend microservice.
 
-FROM nginx:1.27-alpine
+# TARGETPLATFORM is injected by `docker buildx build --platform` or by the
+# `platform:` key in docker-compose.yaml.  Defaults to linux/amd64 so the
+# image is always EKS-compatible even when built on Apple Silicon (arm64).
+ARG TARGETPLATFORM=linux/amd64
+FROM --platform=${TARGETPLATFORM} nginx:1.27-alpine
 
 RUN rm -rf /usr/share/nginx/html/*
 

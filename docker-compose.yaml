@@ -9,11 +9,11 @@
 #   backend-techdocs → port 7010 — TechDocs
 #   postgres         → port 5432 — Shared database for all backends
 #
-# How app-config.yaml is shared:
-#   Every backend mounts the SAME app-config.yaml + app-config.production.yaml
-#   from the host via a read-only volume bind. Each service then overrides only
-#   its own baseUrl and port via APP_CONFIG_ environment variables so a single
-#   config file drives all services without duplication.
+# How config works:
+#   app-config.yaml          → base defaults (same for all backends)
+#   app-config.production.yaml → reads ${BACKEND_BASE_URL}, ${POSTGRES_DB}, etc.
+#   Each service sets its own BACKEND_BASE_URL, BACKEND_LISTEN_PORT, POSTGRES_DB
+#   via environment variables, no APP_CONFIG_ prefix needed.
 #
 # Quick start:
 #   1. cp .env.example .env   (fill in BACKEND_SECRET, GITHUB_TOKEN, POSTGRES_PASSWORD)
@@ -26,6 +26,7 @@ services:
 
   # ── Nginx: API Gateway + Frontend ─────────────────────────────────────────
   nginx:
+    platform: linux/amd64
     build:
       context: .
       dockerfile: packages/app/Dockerfile
@@ -40,28 +41,23 @@ services:
 
   # ── Backend A: Core ────────────────────────────────────────────────────────
   backend-core:
+    platform: linux/amd64
     build:
       context: .
       dockerfile: packages/backend-core/Dockerfile
     ports:
       - "7007:7007"
     environment:
-      # Each backend overrides its own URL and port — everything else comes from app-config.yaml
-      APP_CONFIG_backend__baseUrl: "http://backend-core:7007"
-      APP_CONFIG_backend__listen__port: "7007"
-      APP_CONFIG_backend__cors__origin: "http://localhost,http://nginx"
-      # Shared secret — must be the SAME value across ALL backends for JWT to work
+      BACKEND_BASE_URL: "http://backend-core:7007"
+      BACKEND_LISTEN_PORT: "7007"
       BACKEND_SECRET: ${BACKEND_SECRET}
       GITHUB_TOKEN: ${GITHUB_TOKEN}
-      # Postgres connection for core (auth, user-settings, notifications, signals)
-      APP_CONFIG_backend__database__client: "pg"
-      APP_CONFIG_backend__database__connection__host: "postgres"
-      APP_CONFIG_backend__database__connection__port: "5432"
-      APP_CONFIG_backend__database__connection__database: "backstage_core"
-      APP_CONFIG_backend__database__connection__user: "backstage"
-      APP_CONFIG_backend__database__connection__password: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: backstage
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: backstage_core
     volumes:
-      # Shared config — read-only, same file for all backends
       - ./app-config.yaml:/app/app-config.yaml:ro
       - ./app-config.production.yaml:/app/app-config.production.yaml:ro
     depends_on:
@@ -71,27 +67,25 @@ services:
 
   # ── Backend B: Catalog + Search + Kubernetes ───────────────────────────────
   backend-catalog:
+    platform: linux/amd64
     build:
       context: .
       dockerfile: packages/backend-catalog/Dockerfile
     ports:
       - "7008:7008"
     environment:
-      APP_CONFIG_backend__baseUrl: "http://backend-catalog:7008"
-      APP_CONFIG_backend__listen__port: "7008"
-      APP_CONFIG_backend__cors__origin: "http://localhost,http://nginx"
+      BACKEND_BASE_URL: "http://backend-catalog:7008"
+      BACKEND_LISTEN_PORT: "7008"
       BACKEND_SECRET: ${BACKEND_SECRET}
       GITHUB_TOKEN: ${GITHUB_TOKEN}
-      APP_CONFIG_backend__database__client: "pg"
-      APP_CONFIG_backend__database__connection__host: "postgres"
-      APP_CONFIG_backend__database__connection__port: "5432"
-      APP_CONFIG_backend__database__connection__database: "backstage_catalog"
-      APP_CONFIG_backend__database__connection__user: "backstage"
-      APP_CONFIG_backend__database__connection__password: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: backstage
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: backstage_catalog
     volumes:
       - ./app-config.yaml:/app/app-config.yaml:ro
       - ./app-config.production.yaml:/app/app-config.production.yaml:ro
-      # Catalog reads local example entity files relative to the backend process
       - ./examples:/app/examples:ro
     depends_on:
       postgres:
@@ -100,23 +94,22 @@ services:
 
   # ── Backend C: Scaffolder ──────────────────────────────────────────────────
   backend-scaffolder:
+    platform: linux/amd64
     build:
       context: .
       dockerfile: packages/backend-scaffolder/Dockerfile
     ports:
       - "7009:7009"
     environment:
-      APP_CONFIG_backend__baseUrl: "http://backend-scaffolder:7009"
-      APP_CONFIG_backend__listen__port: "7009"
-      APP_CONFIG_backend__cors__origin: "http://localhost,http://nginx"
+      BACKEND_BASE_URL: "http://backend-scaffolder:7009"
+      BACKEND_LISTEN_PORT: "7009"
       BACKEND_SECRET: ${BACKEND_SECRET}
       GITHUB_TOKEN: ${GITHUB_TOKEN}
-      APP_CONFIG_backend__database__client: "pg"
-      APP_CONFIG_backend__database__connection__host: "postgres"
-      APP_CONFIG_backend__database__connection__port: "5432"
-      APP_CONFIG_backend__database__connection__database: "backstage_scaffolder"
-      APP_CONFIG_backend__database__connection__user: "backstage"
-      APP_CONFIG_backend__database__connection__password: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: backstage
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: backstage_scaffolder
     volumes:
       - ./app-config.yaml:/app/app-config.yaml:ro
       - ./app-config.production.yaml:/app/app-config.production.yaml:ro
@@ -127,28 +120,24 @@ services:
 
   # ── Backend D: TechDocs ────────────────────────────────────────────────────
   backend-techdocs:
+    platform: linux/amd64
     build:
       context: .
       dockerfile: packages/backend-techdocs/Dockerfile
     ports:
       - "7010:7010"
     environment:
-      APP_CONFIG_backend__baseUrl: "http://backend-techdocs:7010"
-      APP_CONFIG_backend__listen__port: "7010"
-      APP_CONFIG_backend__cors__origin: "http://localhost,http://nginx"
+      BACKEND_BASE_URL: "http://backend-techdocs:7010"
+      BACKEND_LISTEN_PORT: "7010"
       BACKEND_SECRET: ${BACKEND_SECRET}
-      APP_CONFIG_backend__database__client: "pg"
-      APP_CONFIG_backend__database__connection__host: "postgres"
-      APP_CONFIG_backend__database__connection__port: "5432"
-      APP_CONFIG_backend__database__connection__database: "backstage_techdocs"
-      APP_CONFIG_backend__database__connection__user: "backstage"
-      APP_CONFIG_backend__database__connection__password: ${POSTGRES_PASSWORD}
-      # TechDocs storage — override to awsS3 in production
-      APP_CONFIG_techdocs__publisher__type: "local"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: backstage
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: backstage_techdocs
     volumes:
       - ./app-config.yaml:/app/app-config.yaml:ro
       - ./app-config.production.yaml:/app/app-config.production.yaml:ro
-      # Persist locally-generated TechDocs site output
       - techdocs-storage:/tmp/techdocs
     depends_on:
       postgres:
@@ -157,15 +146,14 @@ services:
 
   # ── Postgres: Shared database ──────────────────────────────────────────────
   postgres:
+    platform: linux/amd64
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: backstage
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      # Each backend gets its own database — created automatically by init script
       POSTGRES_MULTIPLE_DATABASES: backstage_core,backstage_catalog,backstage_scaffolder,backstage_techdocs
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      # Init script that creates all 4 databases on first boot
       - ./scripts/postgres-init.sh:/docker-entrypoint-initdb.d/init.sh:ro
     ports:
       - "5432:5432"
