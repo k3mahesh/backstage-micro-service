@@ -324,60 +324,29 @@ kubectl create secret generic backstage-secrets \
     --query Parameter.Value --output text)
 ```
 
-### Step 5 — Apply Manifests in Order
+### Step 5 — Deploy everything with one script
 
 ```bash
-# 1. Namespace
-kubectl apply -f k8s/namespace.yaml
+# Dry-run first to validate manifests and check for missed placeholders
+./scripts/deploy-k8s.sh --dry-run
 
-# 2. ConfigMaps
-kubectl apply -f k8s/configmaps/
-
-# 3. Storage
-kubectl apply -f k8s/storage/
-
-# 4. Data layer — wait for postgres before starting backends
-kubectl apply -f k8s/workloads/postgres.yaml
-kubectl apply -f k8s/workloads/redis.yaml
-kubectl rollout status statefulset/postgres -n backstage
-kubectl rollout status statefulset/redis -n backstage
-
-# 5. Application workloads
-kubectl apply -f k8s/workloads/frontend.yaml
-kubectl apply -f k8s/workloads/backend-core.yaml
-kubectl apply -f k8s/workloads/backend-catalog.yaml
-kubectl apply -f k8s/workloads/backend-scaffolder.yaml
-kubectl apply -f k8s/workloads/backend-techdocs.yaml
-
-# 6. Envoy ingress — creates the AWS ELB
-kubectl apply -f k8s/workloads/envoy.yaml
+# Full deploy (applies in order, waits for each layer, patches LB DNS automatically)
+./scripts/deploy-k8s.sh
 ```
 
-### Step 6 — Get the Envoy LB DNS and Update APP_BASE_URL
+The script handles steps 5 and 6 automatically:
+- Applies manifests in dependency order (namespace → configmaps → storage → postgres/redis → backends → frontend → envoy)
+- Waits for postgres and redis to be ready before starting backends
+- Waits for the Envoy NLB to get its DNS (up to 5 minutes)
+- Patches `APP_BASE_URL` and `CORS_ORIGIN` in all backends with the LB DNS
+- Prints a pod/service summary and the final URL at the end
 
+Other useful modes:
 ```bash
-# Wait for the ELB to be provisioned (can take 1-2 minutes)
-kubectl get svc envoy -n backstage -w
-
-# Get the DNS
-LB_DNS=$(kubectl get svc envoy -n backstage \
-  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-echo $LB_DNS
+./scripts/deploy-k8s.sh --rollout       # force rolling restart of all deployments
+./scripts/deploy-k8s.sh --skip-wait     # apply everything without waiting (useful in CI)
+./scripts/deploy-k8s.sh --namespace myns # deploy to a different namespace
 ```
-
-Once you have `$LB_DNS`, update `APP_BASE_URL` and `CORS_ORIGIN` in every backend Deployment:
-
-```bash
-# Patch each backend deployment's APP_BASE_URL env var
-for dep in backend-core backend-catalog backend-scaffolder backend-techdocs; do
-  kubectl set env deployment/$dep \
-    -n backstage \
-    APP_BASE_URL=http://$LB_DNS \
-    CORS_ORIGIN=http://$LB_DNS
-done
-```
-
-Then open `http://$LB_DNS` in your browser.
 
 ---
 
@@ -520,6 +489,29 @@ PostgreSQL and Redis run as single-replica containers inside the cluster (POC ap
 - **SSM parameters** must be created before creating the K8s secret
 
 **Status:** ✅ Manifests committed — pending first EKS deployment
+
+---
+
+### [2026-09-29] — Add deploy-k8s.sh script
+
+**Files changed:** `scripts/deploy-k8s.sh` (new)
+
+**What changed:**
+Single script that deploys all K8s manifests in the correct dependency order,
+waits for each layer to be healthy before moving to the next, and automatically
+patches `APP_BASE_URL` once the Envoy LoadBalancer gets its DNS from AWS.
+
+**Why:**
+Applying manifests out of order (e.g. backends before postgres) causes pod
+crash-loops that are confusing to debug. The script ensures postgres and redis
+are fully ready before any backend starts, and handles the Envoy LB DNS
+chicken-and-egg problem automatically.
+
+**AWS impact:**
+Envoy `LoadBalancer` Service triggers AWS to provision an NLB. DNS is assigned
+within 1-3 minutes. The script waits and patches APP_BASE_URL automatically.
+
+**Status:** ✅ Done
 
 ---
 
