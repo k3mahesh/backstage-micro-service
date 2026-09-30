@@ -1,0 +1,185 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Envoy Proxy — Ingress Controller for Backstage Microservices
+#
+# Routing table (evaluated top-to-bottom, first match wins):
+#   /api/catalog/*      → backend-catalog:7008
+#   /api/search/*       → backend-catalog:7008
+#   /api/kubernetes/*   → backend-catalog:7008
+#   /api/scaffolder/*   → backend-scaffolder:7009  (300s timeout for template runs)
+#   /api/techdocs/*     → backend-techdocs:7010
+#   /api/*              → backend-core:7007         (auth, proxy, signals, notifications)
+#   /*                  → frontend:8080             (React SPA — nginx static server)
+#
+# WebSocket upgrade is enabled globally so Backstage signals (/api/events/*)
+# and scaffolder task log streaming work without additional config.
+#
+# Admin interface: http://localhost:9901 — useful for inspecting clusters,
+# live traffic stats, and health. Restrict to internal network in production.
+# ──────────────────────────────────────────────────────────────────────────────
+
+static_resources:
+
+  listeners:
+  - name: listener_0
+    address:
+      socket_address:
+        address: 0.0.0.0
+        port_value: 80
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: ingress_http
+
+          # Structured access log to stdout — picked up by docker compose logs
+          access_log:
+          - name: envoy.access_loggers.stdout
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+
+          # Allow WebSocket upgrades globally (Backstage signals + scaffolder streaming)
+          upgrade_configs:
+          - upgrade_type: websocket
+
+          route_config:
+            name: backstage_routes
+            virtual_hosts:
+            - name: backstage
+              domains: ["*"]
+              routes:
+
+              # ── Catalog + Search + Kubernetes ─────────────────────────────
+              - match:
+                  prefix: "/api/catalog/"
+                route:
+                  cluster: backend_catalog
+                  timeout: 30s
+
+              - match:
+                  prefix: "/api/search/"
+                route:
+                  cluster: backend_catalog
+                  timeout: 30s
+
+              - match:
+                  prefix: "/api/kubernetes/"
+                route:
+                  cluster: backend_catalog
+                  timeout: 30s
+
+              # ── Scaffolder (long timeout — templates can take minutes) ────
+              - match:
+                  prefix: "/api/scaffolder/"
+                route:
+                  cluster: backend_scaffolder
+                  timeout: 300s
+
+              # ── TechDocs ──────────────────────────────────────────────────
+              - match:
+                  prefix: "/api/techdocs/"
+                route:
+                  cluster: backend_techdocs
+                  timeout: 60s
+
+              # ── Core: auth, proxy, signals, notifications (WebSocket) ─────
+              - match:
+                  prefix: "/api/"
+                route:
+                  cluster: backend_core
+                  timeout: 30s
+                  upgrade_configs:
+                  - upgrade_type: websocket
+
+              # ── React SPA fallback ────────────────────────────────────────
+              - match:
+                  prefix: "/"
+                route:
+                  cluster: frontend
+                  timeout: 10s
+
+          http_filters:
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  # ── Clusters (upstream services) ────────────────────────────────────────────
+  clusters:
+
+  - name: frontend
+    connect_timeout: 0.25s
+    type: STRICT_DNS
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: frontend
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: frontend   # docker-compose service name
+                port_value: 8080
+
+  - name: backend_core
+    connect_timeout: 0.25s
+    type: STRICT_DNS
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: backend_core
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: backend-core
+                port_value: 7007
+
+  - name: backend_catalog
+    connect_timeout: 0.25s
+    type: STRICT_DNS
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: backend_catalog
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: backend-catalog
+                port_value: 7008
+
+  - name: backend_scaffolder
+    connect_timeout: 0.25s
+    type: STRICT_DNS
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: backend_scaffolder
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: backend-scaffolder
+                port_value: 7009
+
+  - name: backend_techdocs
+    connect_timeout: 0.25s
+    type: STRICT_DNS
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: backend_techdocs
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: backend-techdocs
+                port_value: 7010
+
+# Admin interface — live cluster stats, health, config dump
+# http://localhost:9901  ← only expose internally in production
+admin:
+  address:
+    socket_address:
+      address: 0.0.0.0
+      port_value: 9901

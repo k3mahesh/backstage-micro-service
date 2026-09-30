@@ -24,8 +24,8 @@ mindmap
       Security Groups
         app-sg
           Inbound 80 from 0.0.0.0
+          Inbound 9901 internal only
           Inbound 22 from your IP only
-          Inbound 7007-7010 internal only
         rds-sg
           Inbound 5432 from app-sg only
         redis-sg
@@ -34,8 +34,9 @@ mindmap
       EC2 — App Host
         Docker Engine
         Docker Compose
-        All 5 containers run here
-        nginx port 80
+        envoy port 80 ingress
+        envoy port 9901 admin
+        frontend nginx port 8080 internal
         backend-core 7007
         backend-catalog 7008
         backend-scaffolder 7009
@@ -82,34 +83,44 @@ mindmap
 ```
                     Your Browser
                          │
+                    port 80 (HTTP)
                          ▼
-              ┌──────────────────────┐
-              │    EC2 — App Host    │
-              │  ┌────────────────┐  │
-              │  │  nginx :80     │  │  ← API gateway + React SPA
-              │  └───────┬────────┘  │
-              │          │           │
-              │  ┌───────▼────────┐  │
-              │  │ backend-core   │  │  :7007  auth, permissions, signals
-              │  │ backend-catalog│  │  :7008  catalog, search, kubernetes
-              │  │ backend-scaffol│  │  :7009  scaffolder
-              │  │ backend-techdoc│  │  :7010  techdocs
-              │  └───────┬────────┘  │
-              └──────────┼───────────┘
-                         │
-              ┌──────────┼───────────┐
-              │          │  Private  │
-              │  ┌───────▼───┐  ┌───▼──────┐
-              │  │PostgreSQL │  │  Redis   │
-              │  │  RDS      │  │(ElastiC) │
-              │  └───────────┘  └──────────┘
-              └────────────────────────────
+              ┌──────────────────────────────────────┐
+              │           EC2 — App Host             │
+              │                                      │
+              │  ┌──────────────────────────────┐    │
+              │  │     Envoy Proxy :80           │    │  ← sole public ingress
+              │  │     (envoy.yaml)              │    │
+              │  │  admin UI :9901               │    │
+              │  └──┬────┬────┬────┬─────────┬──┘    │
+              │     │    │    │    │         │        │
+              │  /api/   │    │    │  /api/  │ /*     │
+              │ catalog  │    │    │ scaffol │        │
+              │  search  │    │    │  der    │        │
+              │  k8s     │    │  /api/      │        │
+              │     │    │  /api/ techdocs  │        │
+              │     │    │  (core)│         │        │
+              │     ▼    ▼    ▼    ▼         ▼        │
+              │  ┌──────────────────────┐ ┌────────┐ │
+              │  │  backend-core  :7007 │ │frontend│ │
+              │  │  backend-cat   :7008 │ │ nginx  │ │
+              │  │  backend-scaf  :7009 │ │ :8080  │ │
+              │  │  backend-tech  :7010 │ └────────┘ │
+              │  └──────────┬───────────┘            │
+              └─────────────┼────────────────────────┘
+                            │
+               ┌────────────┼──────────────┐
+               │            │   Private    │
+               │  ┌─────────▼──┐  ┌───────▼──────┐
+               │  │ PostgreSQL │  │    Redis     │
+               │  │ (RDS/cont) │  │(ElastiC/cont)│
+               │  └────────────┘  └──────────────┘
+               └────────────────────────────────────
 ```
 
-> For this POC we are running all five containers on a **single EC2 instance** using
+> For this POC we are running all containers on a **single EC2 instance** using
 > docker compose. PostgreSQL and Redis are either managed AWS services (RDS /
-> ElastiCache) or run as containers alongside the app — see the checklist below
-> for the decision made for each.
+> ElastiCache) or run as containers — see the checklist below for the decision.
 
 ---
 
@@ -285,15 +296,17 @@ docker compose down -v && docker compose up -d
 
 ## Health Check URLs
 
-Once deployed, these endpoints confirm each service is alive:
+Once deployed, all traffic goes through Envoy on port 80:
 
-| Service | URL |
-|---|---|
-| Frontend (nginx) | `http://<IP>/` |
-| Backend Core | `http://<IP>/api/app/health` |
-| Backend Catalog | `http://<IP>/api/catalog/entities` |
-| Backend Scaffolder | `http://<IP>/api/scaffolder/v2/tasks` |
-| Backend TechDocs | `http://<IP>/api/techdocs/` |
+| Check | URL | Notes |
+|---|---|---|
+| React SPA loads | `http://<IP>/` | Envoy → frontend nginx |
+| Envoy admin | `http://<IP>:9901/` | Live cluster stats, config dump |
+| Envoy cluster health | `http://<IP>:9901/clusters` | See upstream health per service |
+| Backend Core | `http://<IP>/api/app/health` | Via Envoy |
+| Backend Catalog | `http://<IP>/api/catalog/entities` | Via Envoy |
+| Backend Scaffolder | `http://<IP>/api/scaffolder/v2/tasks` | Via Envoy |
+| Backend TechDocs | `http://<IP>/api/techdocs/` | Via Envoy |
 
 ---
 
@@ -324,6 +337,41 @@ cpu-features) compile for arm64 and the images fail on AWS EC2 (amd64).
 **AWS impact:**
 None — this is a build-time fix. Images built and pushed to EC2 or ECR will now
 be correct amd64 images regardless of where the build runs.
+
+**Status:** ✅ Committed and pushed to main
+
+---
+
+### [2026-09-29] — Replace nginx routing with Envoy proxy as ingress controller
+
+**Files changed:**
+- `envoy.yaml` — new file, Envoy v1.31 static config
+- `nginx.conf` — stripped to static-file-only server on port 8080
+- `packages/app/Dockerfile` — EXPOSE changed from 80 → 8080
+- `docker-compose.yaml` — added `envoy` service, renamed `nginx` → `frontend`
+
+**What changed:**
+nginx was handling two jobs: serving the React SPA and proxying all `/api/*`
+traffic to backend services. Those responsibilities are now split cleanly:
+- **Envoy** listens on port 80, owns all routing decisions (API + SPA)
+- **frontend (nginx)** listens on port 8080 internally, serves static files only
+
+Envoy config (`envoy.yaml`) maps each API prefix to its backend cluster, with
+per-route timeouts (scaffolder gets 300 s for long-running template executions)
+and WebSocket upgrade enabled for Backstage signals and log streaming.
+The Envoy admin UI is available on port 9901.
+
+**Why:**
+nginx as an API gateway is hard to extend (no circuit breaking, no retries,
+no observability). Envoy gives us access logging, health-check endpoints,
+per-cluster stats, and a clear path to xDS dynamic config for production.
+
+**AWS impact:**
+- **Security group `app-sg`**: port 9901 should be open *only* from the bastion
+  IP (or your IP) for admin access. Remove from public-facing rules in production.
+- **EC2**: no new instance changes needed — Envoy runs as a docker compose service.
+- Backend ports 7007–7010 remain exposed on the host for POC debugging.
+  In production, remove those `ports:` entries so only Envoy (port 80) is reachable.
 
 **Status:** ✅ Committed and pushed to main
 

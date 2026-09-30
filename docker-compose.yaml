@@ -1,42 +1,64 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # Backstage — Microservice Docker Compose
 #
+# Ingress:
+#   envoy            → port 80  — Envoy proxy: routes all traffic (API + SPA)
+#                      port 9901 — Envoy admin (stats, health, config dump)
+#
 # Services:
-#   nginx            → port 80  — API gateway + React SPA (entry point for browser)
+#   frontend         → port 8080 (internal) — React SPA served by nginx
 #   backend-core     → port 7007 — Auth, Proxy, Permissions, Notifications, Signals
 #   backend-catalog  → port 7008 — Catalog, Search, Kubernetes
 #   backend-scaffolder → port 7009 — Scaffolder, GitHub actions
 #   backend-techdocs → port 7010 — TechDocs
 #   postgres         → port 5432 — Shared database for all backends
 #
-# How config works:
-#   app-config.yaml          → base defaults (same for all backends)
-#   app-config.production.yaml → reads ${BACKEND_BASE_URL}, ${POSTGRES_DB}, etc.
-#   Each service sets its own BACKEND_BASE_URL, BACKEND_LISTEN_PORT, POSTGRES_DB
-#   via environment variables, no APP_CONFIG_ prefix needed.
+# Traffic flow:
+#   Browser → Envoy:80 → /api/catalog/* → backend-catalog:7008
+#                      → /api/search/*  → backend-catalog:7008
+#                      → /api/scaffolder/* → backend-scaffolder:7009
+#                      → /api/techdocs/* → backend-techdocs:7010
+#                      → /api/*         → backend-core:7007
+#                      → /*             → frontend:8080 (React SPA)
 #
 # Quick start:
 #   1. cp .env.example .env   (fill in BACKEND_SECRET, GITHUB_TOKEN, POSTGRES_PASSWORD)
 #   2. docker compose build
 #   3. docker compose up
 #   4. Open http://localhost
+#   5. Envoy admin: http://localhost:9901
 # ──────────────────────────────────────────────────────────────────────────────
 
 services:
 
-  # ── Nginx: API Gateway + Frontend ─────────────────────────────────────────
-  nginx:
+  # ── Envoy: Ingress Proxy ────────────────────────────────────────────────────
+  envoy:
     platform: linux/amd64
-    build:
-      context: .
-      dockerfile: packages/app/Dockerfile
+    image: envoyproxy/envoy:v1.31-latest
+    volumes:
+      - ./envoy.yaml:/etc/envoy/envoy.yaml:ro
     ports:
-      - "80:80"
+      - "80:80"       # Public ingress — browser traffic
+      - "9901:9901"   # Envoy admin UI — restrict to internal network in production
     depends_on:
+      - frontend
       - backend-core
       - backend-catalog
       - backend-scaffolder
       - backend-techdocs
+    restart: unless-stopped
+
+  # ── Frontend: React SPA (static files only) ─────────────────────────────────
+  # No longer handles API routing — that is Envoy's job.
+  frontend:
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: packages/app/Dockerfile
+    # Port 8080 is internal only; Envoy routes /* here
+    # Uncomment the line below only for direct debugging:
+    # ports:
+    #   - "8080:8080"
     restart: unless-stopped
 
   # ── Backend A: Core ────────────────────────────────────────────────────────
@@ -45,6 +67,7 @@ services:
     build:
       context: .
       dockerfile: packages/backend-core/Dockerfile
+    # Exposed for direct debugging. Remove in production — traffic must go via Envoy.
     ports:
       - "7007:7007"
     environment:

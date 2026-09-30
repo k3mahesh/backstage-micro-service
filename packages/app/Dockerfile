@@ -19,6 +19,7 @@ COPY packages/app/dist /usr/share/nginx/html
 # API gateway + SPA routing config
 COPY nginx.conf /etc/nginx/nginx.conf
 
-EXPOSE 80
+# Port 8080 — Envoy is the public ingress on :80; nginx only serves static files internally
+EXPOSE 8080
 
 CMD ["nginx", "-g", "daemon off;"]
