@@ -270,32 +270,33 @@ git push origin main
 
 ### Step 2 — On the Bastion Host: Build & Push Images
 
+A dedicated script handles everything — ECR login, React pre-build, image build, and push:
+
 ```bash
-# Authenticate with ECR
-AWS_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
-AWS_REGION=ap-south-1
-ECR_REGISTRY=$AWS_ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com
-
-aws ecr get-login-password --region $AWS_REGION \
-  | docker login --username AWS --password-stdin $ECR_REGISTRY
-
 # Pull latest code
 cd backstage-micro-service
 git pull origin main
 
-# Build and push — do this for each service
-for svc in frontend backend-core backend-catalog backend-scaffolder backend-techdocs; do
-  docker build \
-    --platform linux/amd64 \
-    -t $ECR_REGISTRY/backstage-$svc:latest \
-    -f packages/$svc/Dockerfile \
-    .
-  docker push $ECR_REGISTRY/backstage-$svc:latest
-done
+# First time only: create ECR repos if they don't exist
+./scripts/build-push-ecr.sh --create-repos --build-only
+
+# Build all images and push to ECR (standard run)
+./scripts/build-push-ecr.sh
+
+# Options:
+#   --tag v1.2.3          tag with a specific version (also tags latest)
+#   --service frontend    build and push a single service only
+#   --build-only          skip push (useful for testing the build)
+#   --push-only           skip build (re-push already-built images)
+#   --region eu-west-1    override AWS region
+#   --create-repos        create ECR repos before building (safe to re-run)
 ```
 
-> **Note:** `packages/app/Dockerfile` is the `frontend` service.
-> Rename it in the build command: `-f packages/app/Dockerfile` for `frontend`.
+The script:
+- Auto-detects your AWS account ID and ECR registry URL
+- Tags images with both `latest` and the current git SHA
+- Runs `yarn workspace app build` before building the frontend image (required — the Dockerfile copies `packages/app/dist/` which must exist on the host)
+- Continues building remaining services if one fails, then reports all failures at the end
 
 ### Step 3 — On the Bastion Host: Update Image URIs in Manifests
 
@@ -519,6 +520,28 @@ PostgreSQL and Redis run as single-replica containers inside the cluster (POC ap
 - **SSM parameters** must be created before creating the K8s secret
 
 **Status:** ✅ Manifests committed — pending first EKS deployment
+
+---
+
+### [2026-09-29] — Add build-push-ecr.sh script
+
+**Files changed:** `scripts/build-push-ecr.sh` (new)
+
+**What changed:**
+Single script to build all 5 Docker images for `linux/amd64` and push them to ECR.
+Handles ECR login, React SPA pre-build, parallel tagging (git SHA + latest),
+optional single-service mode, and error reporting.
+
+**Why:**
+Previously required manually running 5+ docker build/push commands. The script
+also handles the frontend pre-build step (`yarn workspace app build`) which is
+easy to forget and causes a silent empty nginx image.
+
+**AWS impact:**
+None directly. Requires ECR repositories to exist — run with `--create-repos`
+on first use.
+
+**Status:** ✅ Done
 
 ---
 
