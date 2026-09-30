@@ -1,0 +1,20 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# ConfigMap: postgres-init
+# Mounted at /docker-entrypoint-initdb.d/init.sh inside the postgres container.
+# Runs once on first start to create one database per Backstage service.
+# ──────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: backstage
+data:
+  init.sh: |
+    #!/bin/bash
+    set -e
+    for db in backstage_core backstage_catalog backstage_scaffolder backstage_techdocs; do
+      echo "Creating database: $db"
+      psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" \
+        -c "CREATE DATABASE $db;" \
+        -c "GRANT ALL PRIVILEGES ON DATABASE $db TO $POSTGRES_USER;"
+    done

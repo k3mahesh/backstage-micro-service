@@ -1,79 +1,70 @@
-# Backstage Microservices — AWS POC Deployment
+# Backstage Microservices — AWS EKS POC Deployment
 
 > **Purpose:** Track every code change, AWS action, and decision made while deploying this POC.
 > Every time something changes — in code or on AWS — a new entry goes in the [Change Log](#change-log).
 >
-> **Goal of this POC:** Understand how to deploy Backstage microservices on AWS securely,
-> end-to-end, from a bastion host. Single PostgreSQL, single Redis.
+> **Goal:** Deploy Backstage microservices on EKS securely, understand the end-to-end flow,
+> and learn what each layer does. Single PostgreSQL and single Redis as containers inside the cluster.
 
 ---
 
-## Mind Map — What We Are Building
+## Mind Map — Full Picture
 
 ```mermaid
 mindmap
-  root((Backstage on AWS — POC))
-    Network
-      VPC
-        Public Subnet
-          EC2 App Host
-          Bastion Host
-        Private Subnet
-          RDS PostgreSQL
-          ElastiCache Redis
-      Security Groups
-        app-sg
-          Inbound 80 from 0.0.0.0
-          Inbound 9901 internal only
-          Inbound 22 from your IP only
-        rds-sg
-          Inbound 5432 from app-sg only
-        redis-sg
-          Inbound 6379 from app-sg only
-    Compute
-      EC2 — App Host
-        Docker Engine
-        Docker Compose
-        envoy port 80 ingress
-        envoy port 9901 admin
-        frontend nginx port 8080 internal
-        backend-core 7007
-        backend-catalog 7008
-        backend-scaffolder 7009
-        backend-techdocs 7010
-    Data
-      RDS PostgreSQL
-        Single instance t3.micro
-        4 databases
-          backstage_core
-          backstage_catalog
-          backstage_scaffolder
-          backstage_techdocs
-      ElastiCache Redis
-        Single node t3.micro
-        Used by backend-core signals
-    Secrets
-      AWS SSM Parameter Store
-        BACKEND_SECRET
-        GITHUB_TOKEN
-        POSTGRES_PASSWORD
-        CORS_ORIGIN
+  root((Backstage on EKS — POC))
+    AWS Infrastructure
+      EKS Cluster
+        Namespace backstage
+        Node Group
+          t3.medium x2 minimum
+      ECR
+        backstage-frontend
+        backstage-backend-core
+        backstage-backend-catalog
+        backstage-backend-scaffolder
+        backstage-backend-techdocs
+      IAM
+        Node instance role
+          ECR pull permission
+          EBS CSI driver permission
+        OIDC provider for IRSA
+      EBS CSI Driver
+        Provisions gp2 PVCs
+        Postgres data 20Gi
+        Redis data 2Gi
+        TechDocs storage 5Gi
+    Kubernetes Workloads
+      namespace backstage
+        Envoy LoadBalancer port 80
+        frontend ClusterIP port 8080
+        backend-core ClusterIP port 7007
+        backend-catalog ClusterIP port 7008
+        backend-scaffolder ClusterIP port 7009
+        backend-techdocs ClusterIP port 7010
+        postgres StatefulSet port 5432
+        redis StatefulSet port 6379
+    Configuration
+      ConfigMaps
+        app-config
+        app-config-production
+        envoy-config
+        postgres-init
+      Secrets
+        backstage-secrets
+          BACKEND_SECRET
+          GITHUB_TOKEN
+          POSTGRES_PASSWORD
     Deployment Workflow
       Local Machine
         Code changes
-        Update this file
+        Update deploy-on-aws.md
         git push origin main
-      Bastion / App Host
+      Bastion Host
         git pull
-        docker compose build
-        docker compose up -d
-        docker compose logs -f
-    Observability
-      docker compose logs
-      CloudWatch Logs Agent
-        Container stdout to CloudWatch
-      Health Checks
-        GET /healthcheck per service
+        Build images
+        Push to ECR
+        kubectl apply -f k8s/
 ```
 
 ---
@@ -81,299 +72,377 @@ mindmap
 ## Architecture Diagram
 
 ```
-                    Your Browser
-                         │
-                    port 80 (HTTP)
-                         ▼
-              ┌──────────────────────────────────────┐
-              │           EC2 — App Host             │
-              │                                      │
-              │  ┌──────────────────────────────┐    │
-              │  │     Envoy Proxy :80           │    │  ← sole public ingress
-              │  │     (envoy.yaml)              │    │
-              │  │  admin UI :9901               │    │
-              │  └──┬────┬────┬────┬─────────┬──┘    │
-              │     │    │    │    │         │        │
-              │  /api/   │    │    │  /api/  │ /*     │
-              │ catalog  │    │    │ scaffol │        │
-              │  search  │    │    │  der    │        │
-              │  k8s     │    │  /api/      │        │
-              │     │    │  /api/ techdocs  │        │
-              │     │    │  (core)│         │        │
-              │     ▼    ▼    ▼    ▼         ▼        │
-              │  ┌──────────────────────┐ ┌────────┐ │
-              │  │  backend-core  :7007 │ │frontend│ │
-              │  │  backend-cat   :7008 │ │ nginx  │ │
-              │  │  backend-scaf  :7009 │ │ :8080  │ │
-              │  │  backend-tech  :7010 │ └────────┘ │
-              │  └──────────┬───────────┘            │
-              └─────────────┼────────────────────────┘
-                            │
-               ┌────────────┼──────────────┐
-               │            │   Private    │
-               │  ┌─────────▼──┐  ┌───────▼──────┐
-               │  │ PostgreSQL │  │    Redis     │
-               │  │ (RDS/cont) │  │(ElastiC/cont)│
-               │  └────────────┘  └──────────────┘
-               └────────────────────────────────────
+           Internet / Your Browser
+                    │
+               port 80 (HTTP)
+                    │
+            ┌───────▼──────────────────────────────────────┐
+            │              AWS EKS Cluster                  │
+            │           Namespace: backstage                │
+            │                                              │
+            │  ┌─────────────────────────┐                 │
+            │  │  Envoy — LoadBalancer   │◄── AWS ELB/NLB  │
+            │  │  (envoy.yaml ConfigMap) │                 │
+            │  └──┬──────┬──────┬───┬───┘                 │
+            │     │      │      │   │                      │
+            │  /api/  /api/  /api/ /*                      │
+            │  cata  scaf   core                           │
+            │  log   folder                                │
+            │  search                                      │
+            │  k8s                                         │
+            │     │      │      │   │                      │
+            │  ┌──▼─┐ ┌──▼──┐ ┌▼─┐ ┌▼──────────┐         │
+            │  │cat │ │scaf │ │cor│ │ frontend  │         │
+            │  │log │ │fold │ │e  │ │ nginx:8080│         │
+            │  │7008│ │7009 │ │700│ └───────────┘         │
+            │  └──┬─┘ └──┬──┘ └┬─┘                        │
+            │  ┌──▼──────▼─────▼──────────────────────┐   │
+            │  │        postgres:5432  redis:6379       │   │
+            │  │        StatefulSet    StatefulSet      │   │
+            │  └──────────────────────────────────────┘   │
+            │                                              │
+            │  ┌─────────────────────────────────────┐    │
+            │  │     EBS Volumes (gp2 PVCs)           │    │
+            │  │  postgres-data 20Gi                  │    │
+            │  │  redis-data 2Gi                      │    │
+            │  │  techdocs-storage 5Gi                │    │
+            │  └─────────────────────────────────────┘    │
+            └──────────────────────────────────────────────┘
 ```
 
-> For this POC we are running all containers on a **single EC2 instance** using
-> docker compose. PostgreSQL and Redis are either managed AWS services (RDS /
-> ElastiCache) or run as containers — see the checklist below for the decision.
+---
+
+## Directory Layout
+
+```
+k8s/
+├── namespace.yaml                      ← create namespace first
+├── configmaps/
+│   ├── app-config.yaml                 ← base Backstage config (ConfigMap)
+│   ├── app-config-production.yaml      ← production overrides (ConfigMap)
+│   ├── envoy.yaml                      ← Envoy proxy routing rules (ConfigMap)
+│   └── postgres-init.yaml              ← DB init script (ConfigMap)
+├── secrets/
+│   ├── backstage-secrets.template.yaml ← COMMIT: placeholder values
+│   └── .gitignore                      ← ignores backstage-secrets.yaml
+├── storage/
+│   └── pvcs.yaml                       ← postgres, redis, techdocs PVCs
+└── workloads/
+    ├── postgres.yaml                   ← StatefulSet + headless Service
+    ├── redis.yaml                      ← StatefulSet + headless Service
+    ├── frontend.yaml                   ← Deployment + ClusterIP Service
+    ├── backend-core.yaml               ← Deployment + ClusterIP Service
+    ├── backend-catalog.yaml            ← Deployment + ClusterIP Service
+    ├── backend-scaffolder.yaml         ← Deployment + ClusterIP Service
+    ├── backend-techdocs.yaml           ← Deployment + ClusterIP Service
+    └── envoy.yaml                      ← Deployment + LoadBalancer Service
+```
 
 ---
 
 ## Pre-Flight Checklist — AWS Setup
 
-Complete these once before the first deployment. Mark each item done as you go.
+### EKS Cluster
 
-### Network
+- [ ] EKS cluster exists (version 1.29+)
+- [ ] `kubectl` configured: `aws eks update-kubeconfig --region ap-south-1 --name <cluster-name>`
+- [ ] Node group has at least 2 × t3.medium nodes
+- [ ] EBS CSI Driver add-on installed (needed for PVC provisioning)
+  ```bash
+  aws eks create-addon --cluster-name <name> --addon-name aws-ebs-csi-driver --region ap-south-1
+  ```
+- [ ] Node IAM role has `AmazonEBSCSIDriverPolicy` attached
 
-- [ ] VPC exists (use default VPC for POC or create a dedicated one)
-- [ ] At least one public subnet for EC2
-- [ ] At least one private subnet for RDS/Redis (or use same subnet for POC)
-- [ ] Internet Gateway attached to VPC
+### ECR Repositories
 
-### Security Groups
+Create one repo per image:
+```bash
+for svc in frontend backend-core backend-catalog backend-scaffolder backend-techdocs; do
+  aws ecr create-repository \
+    --repository-name backstage-$svc \
+    --region ap-south-1 \
+    --image-scanning-configuration scanOnPush=true
+done
+```
 
-- [ ] **app-sg** — EC2 host
-  - Inbound TCP 22 from your IP (bastion access)
-  - Inbound TCP 80 from `0.0.0.0/0` (Backstage UI)
-  - Outbound all traffic
-- [ ] **rds-sg** — PostgreSQL
-  - Inbound TCP 5432 from `app-sg`
-- [ ] **redis-sg** — Redis
-  - Inbound TCP 6379 from `app-sg`
+- [ ] `backstage-frontend`
+- [ ] `backstage-backend-core`
+- [ ] `backstage-backend-catalog`
+- [ ] `backstage-backend-scaffolder`
+- [ ] `backstage-backend-techdocs`
 
-### Compute
+### Node Group — ECR Pull Permission
 
-- [ ] EC2 instance launched (Amazon Linux 2023 or Ubuntu 22.04, t3.medium minimum)
-- [ ] Docker installed: `sudo yum install docker -y && sudo systemctl enable docker --now`
-- [ ] Docker Compose v2 installed: `sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64" -o /usr/local/bin/docker-compose && sudo chmod +x /usr/local/bin/docker-compose`
-- [ ] EC2 instance profile attached with SSM read permissions (to fetch secrets)
-- [ ] Git installed and repo cloned: `git clone https://github.com/k3mahesh/backstage-micro-service.git`
-
-### Data
-
-- [ ] **PostgreSQL** — choose one:
-  - [ ] Option A: RDS PostgreSQL 16 (t3.micro, single-AZ) — recommended
-  - [ ] Option B: Run in docker compose alongside app containers (no RDS needed)
-- [ ] **Redis** — choose one:
-  - [ ] Option A: ElastiCache Redis (t3.micro, single node) — recommended
-  - [ ] Option B: Run `redis:7-alpine` container in docker compose
-
-> For this POC, **Option B (both in docker compose)** is the fastest path.
-> Swap to Option A when validating security/networking.
-
-### Secrets (SSM Parameter Store)
-
-- [ ] `/backstage/poc/BACKEND_SECRET` — random 32-byte base64 string
-- [ ] `/backstage/poc/GITHUB_TOKEN` — GitHub PAT with repo read scope
-- [ ] `/backstage/poc/POSTGRES_PASSWORD` — strong password
-- [ ] `/backstage/poc/CORS_ORIGIN` — EC2 public IP or domain e.g. `http://1.2.3.4`
-
-### DNS / Access (Optional for POC)
-
-- [ ] Either use EC2 public IP directly, or
-- [ ] Create Route 53 A record pointing to EC2 IP
+- [ ] Node instance role has `AmazonEC2ContainerRegistryReadOnly` attached
 
 ---
 
 ## Deployment Workflow
 
-Every deployment follows this exact sequence. Do not skip steps.
+Follow this exact order every time. Steps depend on each other.
 
-### On Your Local Machine
+### Step 1 — On Your Local Machine
 
 ```bash
-# 1. Make your code / config changes
-# 2. Update the Change Log section at the bottom of this file
-# 3. Stage and commit
+# Make code changes, then:
+# 1. Update the Change Log at the bottom of this file
+# 2. Commit and push
 git add .
 git commit -m "your message"
 git push origin main
 ```
 
-### On the Bastion / App Host
+### Step 2 — On the Bastion Host: Build & Push Images
 
 ```bash
-# SSH in
-ssh -i your-key.pem ec2-user@<EC2_PUBLIC_IP>
+# Authenticate with ECR
+AWS_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+AWS_REGION=ap-south-1
+ECR_REGISTRY=$AWS_ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com
 
-# Go to the repo
+aws ecr get-login-password --region $AWS_REGION \
+  | docker login --username AWS --password-stdin $ECR_REGISTRY
+
+# Pull latest code
 cd backstage-micro-service
-
-# Pull latest
 git pull origin main
 
-# Load secrets from SSM into environment (see .env section below)
-# OR export them manually for POC
-
-# Build images (only needed when Dockerfile or source changed)
-docker compose build
-
-# Start / restart services
-docker compose up -d
-
-# Watch logs across all services
-docker compose logs -f
-
-# Check individual service
-docker compose logs -f backend-catalog
+# Build and push — do this for each service
+for svc in frontend backend-core backend-catalog backend-scaffolder backend-techdocs; do
+  docker build \
+    --platform linux/amd64 \
+    -t $ECR_REGISTRY/backstage-$svc:latest \
+    -f packages/$svc/Dockerfile \
+    .
+  docker push $ECR_REGISTRY/backstage-$svc:latest
+done
 ```
 
-### Generating the .env File on the Host
+> **Note:** `packages/app/Dockerfile` is the `frontend` service.
+> Rename it in the build command: `-f packages/app/Dockerfile` for `frontend`.
 
-For the POC, create a `.env` file on the EC2 host (never commit this):
+### Step 3 — On the Bastion Host: Update Image URIs in Manifests
+
+Replace the `<ECR_REGISTRY>` placeholder in each workload manifest:
 
 ```bash
-cat > .env << 'EOF'
-BACKEND_SECRET=<fetch from SSM>
-GITHUB_TOKEN=<fetch from SSM>
-POSTGRES_PASSWORD=<fetch from SSM>
-CORS_ORIGIN=http://<EC2_PUBLIC_IP>
-EOF
+# One-liner to replace in all workload files
+sed -i "s|<ECR_REGISTRY>|$ECR_REGISTRY|g" k8s/workloads/*.yaml
 ```
 
-Or pull directly from SSM (requires EC2 instance profile):
+### Step 4 — On the Bastion Host: Create the Secret
 
 ```bash
-export BACKEND_SECRET=$(aws ssm get-parameter --name /backstage/poc/BACKEND_SECRET --with-decryption --query Parameter.Value --output text)
-export GITHUB_TOKEN=$(aws ssm get-parameter --name /backstage/poc/GITHUB_TOKEN --with-decryption --query Parameter.Value --output text)
-export POSTGRES_PASSWORD=$(aws ssm get-parameter --name /backstage/poc/POSTGRES_PASSWORD --with-decryption --query Parameter.Value --output text)
-export CORS_ORIGIN=$(aws ssm get-parameter --name /backstage/poc/CORS_ORIGIN --with-decryption --query Parameter.Value --output text)
+# Never commit this — it is .gitignored
+kubectl create secret generic backstage-secrets \
+  --namespace backstage \
+  --from-literal=BACKEND_SECRET=$(aws ssm get-parameter \
+    --name /backstage/poc/BACKEND_SECRET --with-decryption \
+    --query Parameter.Value --output text) \
+  --from-literal=GITHUB_TOKEN=$(aws ssm get-parameter \
+    --name /backstage/poc/GITHUB_TOKEN --with-decryption \
+    --query Parameter.Value --output text) \
+  --from-literal=POSTGRES_PASSWORD=$(aws ssm get-parameter \
+    --name /backstage/poc/POSTGRES_PASSWORD --with-decryption \
+    --query Parameter.Value --output text)
 ```
+
+### Step 5 — Apply Manifests in Order
+
+```bash
+# 1. Namespace
+kubectl apply -f k8s/namespace.yaml
+
+# 2. ConfigMaps
+kubectl apply -f k8s/configmaps/
+
+# 3. Storage
+kubectl apply -f k8s/storage/
+
+# 4. Data layer — wait for postgres before starting backends
+kubectl apply -f k8s/workloads/postgres.yaml
+kubectl apply -f k8s/workloads/redis.yaml
+kubectl rollout status statefulset/postgres -n backstage
+kubectl rollout status statefulset/redis -n backstage
+
+# 5. Application workloads
+kubectl apply -f k8s/workloads/frontend.yaml
+kubectl apply -f k8s/workloads/backend-core.yaml
+kubectl apply -f k8s/workloads/backend-catalog.yaml
+kubectl apply -f k8s/workloads/backend-scaffolder.yaml
+kubectl apply -f k8s/workloads/backend-techdocs.yaml
+
+# 6. Envoy ingress — creates the AWS ELB
+kubectl apply -f k8s/workloads/envoy.yaml
+```
+
+### Step 6 — Get the Envoy LB DNS and Update APP_BASE_URL
+
+```bash
+# Wait for the ELB to be provisioned (can take 1-2 minutes)
+kubectl get svc envoy -n backstage -w
+
+# Get the DNS
+LB_DNS=$(kubectl get svc envoy -n backstage \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+echo $LB_DNS
+```
+
+Once you have `$LB_DNS`, update `APP_BASE_URL` and `CORS_ORIGIN` in every backend Deployment:
+
+```bash
+# Patch each backend deployment's APP_BASE_URL env var
+for dep in backend-core backend-catalog backend-scaffolder backend-techdocs; do
+  kubectl set env deployment/$dep \
+    -n backstage \
+    APP_BASE_URL=http://$LB_DNS \
+    CORS_ORIGIN=http://$LB_DNS
+done
+```
+
+Then open `http://$LB_DNS` in your browser.
 
 ---
 
-## Config Changes Needed for AWS
-
-The following changes are required in `app-config.production.yaml` before deploying.
-
-| Setting | Current (docker-compose) | Required for AWS EC2 |
-|---|---|---|
-| `app.baseUrl` | `http://localhost` | `http://<EC2_PUBLIC_IP>` |
-| `backend.cors.origin` | `localhost` | `http://<EC2_PUBLIC_IP>` |
-| `auth.providers.guest.dangerouslyAllowOutsideDevelopment` | `true` | Keep `true` for POC only |
-| `POSTGRES_HOST` | `postgres` (container name) | RDS endpoint or `postgres` if container |
-| `REDIS_HOST` | not yet wired | Redis endpoint or container name |
-
-> **Action:** Once you have the EC2 IP, update `app-config.production.yaml`
-> accordingly before running `docker compose up`.
-
----
-
-## Useful Commands on the Host
+## Useful kubectl Commands
 
 ```bash
-# See all running containers and their health
-docker compose ps
+# See all pods and their status
+kubectl get pods -n backstage
 
-# View resource usage
-docker stats
+# Watch pods come up live
+kubectl get pods -n backstage -w
 
-# Restart a single service without touching others
-docker compose restart backend-catalog
+# Tail logs for a service
+kubectl logs -f deployment/backend-catalog -n backstage
 
-# Rebuild and restart one service only
-docker compose up -d --build backend-core
+# Tail logs for postgres
+kubectl logs -f statefulset/postgres -n backstage
 
-# Tail logs for all services, last 50 lines
-docker compose logs --tail=50 -f
+# Shell into a running pod for debugging
+kubectl exec -it deployment/backend-catalog -n backstage -- sh
 
-# Open a shell in a running container for debugging
-docker compose exec backend-catalog sh
+# Check postgres databases are created
+kubectl exec -it statefulset/postgres -n backstage -- \
+  psql -U backstage -c '\l'
 
-# Check the postgres databases are created
-docker compose exec postgres psql -U backstage -c '\l'
+# Describe a pod to see events / errors
+kubectl describe pod -l app=backend-core -n backstage
 
-# Nuke everything and start clean (WARNING: deletes volumes)
-docker compose down -v && docker compose up -d
+# Restart a deployment (e.g. after config change)
+kubectl rollout restart deployment/backend-catalog -n backstage
+
+# Force re-pull latest image
+kubectl rollout restart deployment/frontend -n backstage
+
+# Delete and re-apply everything (nuclear option)
+kubectl delete namespace backstage
+kubectl apply -f k8s/namespace.yaml
+# ... re-run steps 2-6 above
 ```
 
 ---
 
 ## Health Check URLs
 
-Once deployed, all traffic goes through Envoy on port 80:
+All traffic goes through the Envoy LB. Use `$LB_DNS` from Step 6.
 
-| Check | URL | Notes |
-|---|---|---|
-| React SPA loads | `http://<IP>/` | Envoy → frontend nginx |
-| Envoy admin | `http://<IP>:9901/` | Live cluster stats, config dump |
-| Envoy cluster health | `http://<IP>:9901/clusters` | See upstream health per service |
-| Backend Core | `http://<IP>/api/app/health` | Via Envoy |
-| Backend Catalog | `http://<IP>/api/catalog/entities` | Via Envoy |
-| Backend Scaffolder | `http://<IP>/api/scaffolder/v2/tasks` | Via Envoy |
-| Backend TechDocs | `http://<IP>/api/techdocs/` | Via Envoy |
+| Check | URL |
+|---|---|
+| React SPA | `http://$LB_DNS/` |
+| Envoy admin (internal only) | `kubectl port-forward svc/envoy-admin 9901:9901 -n backstage` then `http://localhost:9901` |
+| Envoy cluster health | `http://localhost:9901/clusters` |
+| Catalog API | `http://$LB_DNS/api/catalog/entities` |
+| Scaffolder API | `http://$LB_DNS/api/scaffolder/v2/tasks` |
+| TechDocs API | `http://$LB_DNS/api/techdocs/` |
+
+---
+
+## SSM Parameters to Create
+
+```bash
+# Generate BACKEND_SECRET
+SECRET=$(node -e "console.log(require('crypto').randomBytes(24).toString('base64'))")
+
+aws ssm put-parameter --name /backstage/poc/BACKEND_SECRET \
+  --value "$SECRET" --type SecureString --region ap-south-1
+
+aws ssm put-parameter --name /backstage/poc/GITHUB_TOKEN \
+  --value "ghp_yourtoken" --type SecureString --region ap-south-1
+
+aws ssm put-parameter --name /backstage/poc/POSTGRES_PASSWORD \
+  --value "yourpassword" --type SecureString --region ap-south-1
+```
 
 ---
 
 ## Change Log
 
-Each entry captures: **what changed in code**, **why**, and **what needs to happen on AWS** as a result.
+---
+
+### [2026-09-29] — Multi-platform Dockerfile fix
+
+**Files changed:** All 5 Dockerfiles, `docker-compose.yaml`
+
+**What changed:** Added `ARG TARGETPLATFORM=linux/amd64` and `FROM --platform=...`
+to every image stage. Added `platform: linux/amd64` to docker-compose services.
+
+**Why:** Prevents arm64/amd64 mismatch when building on Apple Silicon for EKS (amd64).
+
+**AWS impact:** None — build-time fix. Images pushed to ECR will be correct amd64.
+
+**Status:** ✅ Done
 
 ---
 
-### [2026-09-29] — Initial multi-platform Dockerfile fix
+### [2026-09-29] — Replace nginx routing with Envoy proxy as ingress
 
-**Files changed:**
-- `packages/app/Dockerfile`
-- `packages/backend-core/Dockerfile`
-- `packages/backend-catalog/Dockerfile`
-- `packages/backend-scaffolder/Dockerfile`
-- `packages/backend-techdocs/Dockerfile`
-- `docker-compose.yaml`
+**Files changed:** `envoy.yaml` (new), `nginx.conf`, `packages/app/Dockerfile`,
+`docker-compose.yaml`
 
-**What changed:**
-Added `ARG TARGETPLATFORM=linux/amd64` and `FROM --platform=${TARGETPLATFORM}` to every
-Docker image stage. Added `platform: linux/amd64` to all services in docker-compose.
+**What changed:** nginx now only serves static files on port 8080.
+Envoy handles all routing on port 80 with per-route timeouts and WebSocket support.
 
-**Why:**
-Built on Apple Silicon (arm64). Without pinning, native modules (better-sqlite3,
-cpu-features) compile for arm64 and the images fail on AWS EC2 (amd64).
+**Why:** Envoy gives us better observability, per-service timeouts, and a clean
+separation between ingress and static file serving.
 
 **AWS impact:**
-None — this is a build-time fix. Images built and pushed to EC2 or ECR will now
-be correct amd64 images regardless of where the build runs.
+- In docker-compose: Envoy listens on port 80 of the host
+- In EKS: Envoy Service type=LoadBalancer creates an AWS NLB
 
-**Status:** ✅ Committed and pushed to main
+**Status:** ✅ Done
 
 ---
 
-### [2026-09-29] — Replace nginx routing with Envoy proxy as ingress controller
+### [2026-09-29] — Move deployment target from docker-compose to EKS
 
 **Files changed:**
-- `envoy.yaml` — new file, Envoy v1.31 static config
-- `nginx.conf` — stripped to static-file-only server on port 8080
-- `packages/app/Dockerfile` — EXPOSE changed from 80 → 8080
-- `docker-compose.yaml` — added `envoy` service, renamed `nginx` → `frontend`
+- `k8s/` directory — all manifests (new)
+- `app-config.production.yaml` — added `APP_BASE_URL` env var support
+- `docker-compose.yaml` — added `APP_BASE_URL: http://localhost` to all backends
+- `deploy-on-aws.md` — complete rewrite for EKS workflow
 
 **What changed:**
-nginx was handling two jobs: serving the React SPA and proxying all `/api/*`
-traffic to backend services. Those responsibilities are now split cleanly:
-- **Envoy** listens on port 80, owns all routing decisions (API + SPA)
-- **frontend (nginx)** listens on port 8080 internally, serves static files only
-
-Envoy config (`envoy.yaml`) maps each API prefix to its backend cluster, with
-per-route timeouts (scaffolder gets 300 s for long-running template executions)
-and WebSocket upgrade enabled for Backstage signals and log streaming.
-The Envoy admin UI is available on port 9901.
+Created a full `k8s/` directory with all Kubernetes manifests:
+- `namespace.yaml` — `backstage` namespace
+- `configmaps/` — app-config, envoy config, postgres init script as ConfigMaps
+- `secrets/` — secret template (committed) + .gitignore
+- `storage/` — PVCs for postgres (20Gi), redis (2Gi), techdocs (5Gi)
+- `workloads/` — StatefulSets for postgres + redis, Deployments for all app services,
+  Envoy as LoadBalancer exposing port 80 via AWS NLB
 
 **Why:**
-nginx as an API gateway is hard to extend (no circuit breaking, no retries,
-no observability). Envoy gives us access logging, health-check endpoints,
-per-cluster stats, and a clear path to xDS dynamic config for production.
+docker-compose is local dev only. EKS is the actual deployment target.
+PostgreSQL and Redis run as single-replica containers inside the cluster (POC approach).
 
 **AWS impact:**
-- **Security group `app-sg`**: port 9901 should be open *only* from the bastion
-  IP (or your IP) for admin access. Remove from public-facing rules in production.
-- **EC2**: no new instance changes needed — Envoy runs as a docker compose service.
-- Backend ports 7007–7010 remain exposed on the host for POC debugging.
-  In production, remove those `ports:` entries so only Envoy (port 80) is reachable.
+- **EKS cluster** must exist with EBS CSI driver add-on installed
+- **ECR repositories** must be created for each image (see pre-flight checklist)
+- **Node IAM role** must have ECR pull + EBS CSI permissions
+- **Envoy LoadBalancer Service** will create an AWS NLB — note the DNS after deploy
+- **SSM parameters** must be created before creating the K8s secret
 
-**Status:** ✅ Committed and pushed to main
+**Status:** ✅ Manifests committed — pending first EKS deployment
 
 ---
 
@@ -386,22 +455,25 @@ per-cluster stats, and a clear path to xDS dynamic config for production.
 _Describe the change._
 
 **Why:**
-_Reason for the change._
+_Reason._
 
 **AWS impact:**
-_What, if anything, needs to happen on AWS as a result.
-e.g. "Restart backend-catalog container", "Update SSM parameter", "Change security group rule"._
+_What needs to happen on AWS as a result.
+e.g.: "kubectl rollout restart deployment/backend-catalog", "ECR image re-push",
+"Update SSM parameter", "EKS node group scaling"._
 
 **Status:** ⏳ Pending / ✅ Done / ❌ Blocked
 
 ---
 
-## Open Items / Decisions Pending
+## Open Items
 
-- [ ] Decide: RDS + ElastiCache vs containers for postgres and redis
-- [ ] Get EC2 public IP and update `app-config.production.yaml`
-- [ ] Create SSM parameters with actual secret values
-- [ ] Verify EC2 instance has outbound internet access (needed for GitHub catalog locations)
-- [ ] Decide whether to build images on EC2 directly or use ECR
-- [ ] Confirm EC2 instance type is large enough (recommend t3.medium, 2 vCPU / 4 GB)
-- [ ] Set up CloudWatch log driver in docker-compose for persistent logs (future)
+- [ ] **EKS cluster** — create with EBS CSI driver add-on
+- [ ] **ECR repos** — create 5 repos (see pre-flight checklist)
+- [ ] **Node IAM role** — attach ECR + EBS CSI policies
+- [ ] **SSM parameters** — create BACKEND_SECRET, GITHUB_TOKEN, POSTGRES_PASSWORD
+- [ ] **Build images** — run the build+push script on bastion
+- [ ] **Replace `<ECR_REGISTRY>`** in all `k8s/workloads/*.yaml` files
+- [ ] **Get Envoy LB DNS** — update APP_BASE_URL in backend deployments after first apply
+- [ ] **StorageClass** — verify cluster has `gp2` or change to `gp3` in `k8s/storage/pvcs.yaml`
+- [ ] **Decide** — HTTPS via ACM + NLB or HTTP-only for POC

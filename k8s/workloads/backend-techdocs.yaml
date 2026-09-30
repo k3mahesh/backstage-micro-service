@@ -1,0 +1,104 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Backend TechDocs — Documentation site generation and serving
+# Replace <ECR_REGISTRY> with your ECR URI before applying.
+# ──────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-techdocs
+  namespace: backstage
+  labels:
+    app: backend-techdocs
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend-techdocs
+  template:
+    metadata:
+      labels:
+        app: backend-techdocs
+    spec:
+      containers:
+      - name: backend-techdocs
+        image: <ECR_REGISTRY>/backstage-backend-techdocs:latest
+        ports:
+        - containerPort: 7010
+        env:
+        - name: APP_BASE_URL
+          value: "http://$(ENVOY_LB_DNS)"
+        - name: BACKEND_BASE_URL
+          value: "http://backend-techdocs:7010"
+        - name: BACKEND_LISTEN_PORT
+          value: "7010"
+        - name: CORS_ORIGIN
+          value: "http://$(ENVOY_LB_DNS)"
+        - name: POSTGRES_HOST
+          value: postgres
+        - name: POSTGRES_PORT
+          value: "5432"
+        - name: POSTGRES_USER
+          value: backstage
+        - name: POSTGRES_DB
+          value: backstage_techdocs
+        - name: BACKEND_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: backstage-secrets
+              key: BACKEND_SECRET
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: backstage-secrets
+              key: POSTGRES_PASSWORD
+        volumeMounts:
+        - name: app-config
+          mountPath: /app/app-config.yaml
+          subPath: app-config.yaml
+        - name: app-config-production
+          mountPath: /app/app-config.production.yaml
+          subPath: app-config-production.yaml
+        - name: techdocs-storage
+          mountPath: /tmp/techdocs
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+        readinessProbe:
+          tcpSocket:
+            port: 7010
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 7010
+          initialDelaySeconds: 60
+          periodSeconds: 20
+      volumes:
+      - name: app-config
+        configMap:
+          name: app-config
+      - name: app-config-production
+        configMap:
+          name: app-config-production
+      - name: techdocs-storage
+        persistentVolumeClaim:
+          claimName: techdocs-storage
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-techdocs
+  namespace: backstage
+  labels:
+    app: backend-techdocs
+spec:
+  selector:
+    app: backend-techdocs
+  ports:
+  - port: 7010
+    targetPort: 7010
+  type: ClusterIP

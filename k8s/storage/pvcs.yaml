@@ -1,0 +1,44 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# PersistentVolumeClaims
+# EKS automatically provisions EBS gp3 volumes via the default StorageClass.
+# Sizes are conservative for a POC — increase before production use.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# PostgreSQL data — all 4 Backstage databases live here
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: backstage
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: gp2   # change to gp3 if your cluster has that StorageClass
+  resources:
+    requests:
+      storage: 20Gi
+---
+# Redis data — used for Backstage signals / caching (small)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data
+  namespace: backstage
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: gp2
+  resources:
+    requests:
+      storage: 2Gi
+---
+# TechDocs storage — generated docs stored here
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: techdocs-storage
+  namespace: backstage
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: gp2
+  resources:
+    requests:
+      storage: 5Gi

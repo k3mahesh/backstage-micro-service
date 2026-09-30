@@ -1,0 +1,63 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Frontend — React SPA served by nginx
+# Serves pre-built static files only. No API proxying — Envoy handles that.
+# Replace <ECR_REGISTRY> with your ECR URI before applying.
+# ──────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: backstage
+  labels:
+    app: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+      - name: frontend
+        # Replace with your ECR image URI
+        # e.g. 123456789.dkr.ecr.ap-south-1.amazonaws.com/backstage-frontend:latest
+        image: <ECR_REGISTRY>/backstage-frontend:latest
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: backstage
+  labels:
+    app: frontend
+spec:
+  selector:
+    app: frontend
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: ClusterIP

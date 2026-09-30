@@ -1,0 +1,104 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Backend Scaffolder — Software templates / GitHub actions
+# Replace <ECR_REGISTRY> with your ECR URI before applying.
+# ──────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-scaffolder
+  namespace: backstage
+  labels:
+    app: backend-scaffolder
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend-scaffolder
+  template:
+    metadata:
+      labels:
+        app: backend-scaffolder
+    spec:
+      containers:
+      - name: backend-scaffolder
+        image: <ECR_REGISTRY>/backstage-backend-scaffolder:latest
+        ports:
+        - containerPort: 7009
+        env:
+        - name: APP_BASE_URL
+          value: "http://$(ENVOY_LB_DNS)"
+        - name: BACKEND_BASE_URL
+          value: "http://backend-scaffolder:7009"
+        - name: BACKEND_LISTEN_PORT
+          value: "7009"
+        - name: CORS_ORIGIN
+          value: "http://$(ENVOY_LB_DNS)"
+        - name: POSTGRES_HOST
+          value: postgres
+        - name: POSTGRES_PORT
+          value: "5432"
+        - name: POSTGRES_USER
+          value: backstage
+        - name: POSTGRES_DB
+          value: backstage_scaffolder
+        - name: BACKEND_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: backstage-secrets
+              key: BACKEND_SECRET
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: backstage-secrets
+              key: POSTGRES_PASSWORD
+        - name: GITHUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: backstage-secrets
+              key: GITHUB_TOKEN
+        volumeMounts:
+        - name: app-config
+          mountPath: /app/app-config.yaml
+          subPath: app-config.yaml
+        - name: app-config-production
+          mountPath: /app/app-config.production.yaml
+          subPath: app-config-production.yaml
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+        readinessProbe:
+          tcpSocket:
+            port: 7009
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 7009
+          initialDelaySeconds: 60
+          periodSeconds: 20
+      volumes:
+      - name: app-config
+        configMap:
+          name: app-config
+      - name: app-config-production
+        configMap:
+          name: app-config-production
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-scaffolder
+  namespace: backstage
+  labels:
+    app: backend-scaffolder
+spec:
+  selector:
+    app: backend-scaffolder
+  ports:
+  - port: 7009
+    targetPort: 7009
+  type: ClusterIP

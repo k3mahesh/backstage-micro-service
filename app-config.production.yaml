@@ -1,12 +1,15 @@
 app:
-  baseUrl: http://localhost
+  # APP_BASE_URL = the public-facing URL of the Envoy LB (EKS) or EC2 IP (local)
+  # e.g. http://a1b2c3d4.elb.ap-south-1.amazonaws.com
+  baseUrl: ${APP_BASE_URL}
 
 backend:
   baseUrl: ${BACKEND_BASE_URL}
   listen:
     port: ${BACKEND_LISTEN_PORT}
   cors:
-    origin: ['http://localhost', 'http://nginx']
+    origin:
+      - ${APP_BASE_URL}
     methods: [GET, HEAD, PATCH, POST, PUT, DELETE]
     credentials: true
   database:

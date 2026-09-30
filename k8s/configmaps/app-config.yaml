@@ -1,0 +1,93 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# ConfigMap: app-config
+# Mirrors the root app-config.yaml, mounted into every backend pod at
+# /app/app-config.yaml to override the copy baked into the image.
+# ──────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: backstage
+data:
+  app-config.yaml: |
+    app:
+      title: Scaffolded Backstage App
+      baseUrl: http://localhost:3000
+      packages: all
+
+    organization:
+      name: My Company
+
+    backend:
+      auth:
+        keys:
+          - secret: ${BACKEND_SECRET}
+      baseUrl: http://localhost:7007
+      listen:
+        port: 7007
+      csp:
+        connect-src: ["'self'", 'http:', 'https:']
+      cors:
+        origin:
+          - http://localhost:3000
+          - ${CORS_ORIGIN}
+        methods: [GET, HEAD, PATCH, POST, PUT, DELETE]
+        credentials: true
+      database:
+        client: better-sqlite3
+        connection: ':memory:'
+      actions:
+        pluginSources:
+          - auth
+          - catalog
+          - scaffolder
+
+    discovery:
+      endpoints:
+        - target: 'http://backend-catalog:7008/api/{{pluginId}}'
+          plugins: [catalog, search, kubernetes]
+        - target: 'http://backend-scaffolder:7009/api/{{pluginId}}'
+          plugins: [scaffolder]
+        - target: 'http://backend-techdocs:7010/api/{{pluginId}}'
+          plugins: [techdocs]
+
+    integrations:
+      github:
+        - host: github.com
+          token: ${GITHUB_TOKEN}
+
+    auth:
+      providers:
+        guest: {}
+
+    scaffolder: {}
+
+    catalog:
+      import:
+        entityFilename: catalog-info.yaml
+        pullRequestBranchName: backstage-integration
+      rules:
+        - allow: [Component, System, API, Resource, Location]
+      locations:
+        - type: file
+          target: ../../examples/entities.yaml
+        - type: file
+          target: ../../examples/template/template.yaml
+          rules:
+            - allow: [Template]
+        - type: file
+          target: ../../examples/org.yaml
+          rules:
+            - allow: [User, Group]
+
+    kubernetes: {}
+
+    permission:
+      enabled: true
+
+    techdocs:
+      builder: 'local'
+      generator:
+        runIn: 'docker'
+      publisher:
+        type: 'local'

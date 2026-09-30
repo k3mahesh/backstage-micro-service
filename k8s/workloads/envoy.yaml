@@ -1,0 +1,97 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Envoy — Ingress proxy
+# Type LoadBalancer → AWS provisions an ELB (Classic or NLB depending on annotations).
+# The DNS of this ELB is what you set as APP_BASE_URL / CORS_ORIGIN in other pods.
+#
+# After applying, get the LB DNS:
+#   kubectl get svc envoy -n backstage -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+# ──────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: envoy
+  namespace: backstage
+  labels:
+    app: envoy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: envoy
+  template:
+    metadata:
+      labels:
+        app: envoy
+    spec:
+      containers:
+      - name: envoy
+        image: envoyproxy/envoy:v1.31-latest
+        ports:
+        - containerPort: 80
+          name: http
+        - containerPort: 9901
+          name: admin
+        volumeMounts:
+        - name: envoy-config
+          mountPath: /etc/envoy/envoy.yaml
+          subPath: envoy.yaml
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 9901
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /ready
+            port: 9901
+          initialDelaySeconds: 10
+          periodSeconds: 10
+      volumes:
+      - name: envoy-config
+        configMap:
+          name: envoy-config
+---
+# Public-facing LoadBalancer Service — AWS provisions an ELB
+apiVersion: v1
+kind: Service
+metadata:
+  name: envoy
+  namespace: backstage
+  labels:
+    app: envoy
+  annotations:
+    # Use NLB instead of Classic ELB (better performance, supports WebSocket)
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+spec:
+  selector:
+    app: envoy
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+  type: LoadBalancer
+---
+# Internal-only service for Envoy admin — never expose publicly
+apiVersion: v1
+kind: Service
+metadata:
+  name: envoy-admin
+  namespace: backstage
+  labels:
+    app: envoy
+spec:
+  selector:
+    app: envoy
+  ports:
+  - name: admin
+    port: 9901
+    targetPort: 9901
+  type: ClusterIP

@@ -1,0 +1,67 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Redis — single replica for POC
+# Used by Backstage backend-core for signals and caching.
+# ──────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: backstage
+  labels:
+    app: redis
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        ports:
+        - containerPort: 6379
+        command: [redis-server, --appendonly, "yes"]
+        volumeMounts:
+        - name: redis-data
+          mountPath: /data
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        readinessProbe:
+          exec:
+            command: [redis-cli, ping]
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        livenessProbe:
+          exec:
+            command: [redis-cli, ping]
+          initialDelaySeconds: 15
+          periodSeconds: 10
+      volumes:
+      - name: redis-data
+        persistentVolumeClaim:
+          claimName: redis-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: backstage
+  labels:
+    app: redis
+spec:
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+  clusterIP: None   # headless — StatefulSet
