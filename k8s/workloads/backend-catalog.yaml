@@ -21,7 +21,7 @@ spec:
     spec:
       containers:
       - name: backend-catalog
-        image: <ECR_REGISTRY>/backstage-backend-catalog:latest
+        image: <ECR_REGISTRY>/backend-catalog:latest
         ports:
         - containerPort: 7008
         env:

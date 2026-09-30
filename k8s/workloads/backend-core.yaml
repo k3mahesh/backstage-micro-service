@@ -21,7 +21,7 @@ spec:
     spec:
       containers:
       - name: backend-core
-        image: <ECR_REGISTRY>/backstage-backend-core:latest
+        image: <ECR_REGISTRY>/backend-core:latest
         ports:
         - containerPort: 7007
         env:

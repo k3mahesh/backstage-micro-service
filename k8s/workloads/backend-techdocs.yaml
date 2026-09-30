@@ -21,7 +21,7 @@ spec:
     spec:
       containers:
       - name: backend-techdocs
-        image: <ECR_REGISTRY>/backstage-backend-techdocs:latest
+        image: <ECR_REGISTRY>/backend-techdocs:latest
         ports:
         - containerPort: 7010
         env:

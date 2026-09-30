@@ -21,7 +21,7 @@ spec:
     spec:
       containers:
       - name: backend-scaffolder
-        image: <ECR_REGISTRY>/backstage-backend-scaffolder:latest
+        image: <ECR_REGISTRY>/backend-scaffolder:latest
         ports:
         - containerPort: 7009
         env:
