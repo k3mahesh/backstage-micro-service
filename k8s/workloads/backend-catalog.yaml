@@ -26,13 +26,13 @@ spec:
         - containerPort: 7008
         env:
         - name: APP_BASE_URL
-          value: "http://$(ENVOY_LB_DNS)"
+          value: "http://<ENVOY_LB_DNS>"
         - name: BACKEND_BASE_URL
           value: "http://backend-catalog:7008"
         - name: BACKEND_LISTEN_PORT
           value: "7008"
         - name: CORS_ORIGIN
-          value: "http://$(ENVOY_LB_DNS)"
+          value: "http://<ENVOY_LB_DNS>"
         - name: POSTGRES_HOST
           value: postgres
         - name: POSTGRES_PORT

@@ -26,13 +26,13 @@ spec:
         - containerPort: 7007
         env:
         - name: APP_BASE_URL
-          value: "http://$(ENVOY_LB_DNS)"   # set this after Envoy LB is provisioned
+          value: "http://<ENVOY_LB_DNS>"   # set this after Envoy LB is provisioned
         - name: BACKEND_BASE_URL
           value: "http://backend-core:7007"
         - name: BACKEND_LISTEN_PORT
           value: "7007"
         - name: CORS_ORIGIN
-          value: "http://$(ENVOY_LB_DNS)"
+          value: "http://<ENVOY_LB_DNS>"
         - name: POSTGRES_HOST
           value: postgres
         - name: POSTGRES_PORT

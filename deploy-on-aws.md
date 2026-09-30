@@ -8,6 +8,82 @@
 
 ---
 
+## Values You Must Fill In Before Deploying
+
+Every placeholder below will cause a deployment failure or misconfiguration if left as-is.
+Work through this table top to bottom — it follows the order you'll encounter them.
+
+| # | Placeholder | File(s) | When to fill | How to get the value |
+|---|---|---|---|---|
+| 1 | `<ECR_REGISTRY>` | `k8s/workloads/*.yaml` (all 5) | Before first `kubectl apply` | `aws sts get-caller-identity --query Account --output text` → `<account>.dkr.ecr.ap-south-1.amazonaws.com` |
+| 2 | `<BASE64_ENCODED_BACKEND_SECRET>` | `k8s/secrets/backstage-secrets.template.yaml` | Before creating the secret | `node -e "console.log(require('crypto').randomBytes(24).toString('base64'))"` then `\| base64` |
+| 3 | `<BASE64_ENCODED_GITHUB_TOKEN>` | `k8s/secrets/backstage-secrets.template.yaml` | Before creating the secret | Your GitHub PAT → `echo -n "ghp_xxx" \| base64` |
+| 4 | `<BASE64_ENCODED_POSTGRES_PASSWORD>` | `k8s/secrets/backstage-secrets.template.yaml` | Before creating the secret | Any strong password → `echo -n "mypassword" \| base64` |
+| 5 | `storageClassName: gp2` | `k8s/storage/pvcs.yaml` | Before applying storage | Run `kubectl get storageclass` — use `gp2` or `gp3` depending on what your cluster has |
+| 6 | `<ENVOY_LB_DNS>` | `k8s/workloads/backend-*.yaml` (all 4) | **After** applying `k8s/workloads/envoy.yaml` and the NLB is provisioned | `kubectl get svc envoy -n backstage -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'` |
+
+### Quick fill-in commands on the bastion host
+
+```bash
+# ── 1. Set your ECR registry ───────────────────────────────────────────────────
+export AWS_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+export AWS_REGION=ap-south-1
+export ECR_REGISTRY=$AWS_ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com
+
+# Replace <ECR_REGISTRY> in all 5 workload files at once
+for f in frontend backend-core backend-catalog backend-scaffolder backend-techdocs; do
+  python3 -c "
+content = open('k8s/workloads/$f.yaml').read()
+open('k8s/workloads/$f.yaml','w').write(content.replace('<ECR_REGISTRY>', '$ECR_REGISTRY'))
+"
+done
+
+# ── 2-4. Create the K8s secret directly from SSM (skip the template file) ─────
+kubectl create secret generic backstage-secrets \
+  --namespace backstage \
+  --from-literal=BACKEND_SECRET="$(aws ssm get-parameter \
+    --name /backstage/poc/BACKEND_SECRET --with-decryption \
+    --query Parameter.Value --output text)" \
+  --from-literal=GITHUB_TOKEN="$(aws ssm get-parameter \
+    --name /backstage/poc/GITHUB_TOKEN --with-decryption \
+    --query Parameter.Value --output text)" \
+  --from-literal=POSTGRES_PASSWORD="$(aws ssm get-parameter \
+    --name /backstage/poc/POSTGRES_PASSWORD --with-decryption \
+    --query Parameter.Value --output text)"
+
+# ── 5. Check which StorageClass your cluster has ──────────────────────────────
+kubectl get storageclass
+# If you see gp3 but pvcs.yaml says gp2, update it:
+# python3 -c "
+# content = open('k8s/storage/pvcs.yaml').read()
+# open('k8s/storage/pvcs.yaml','w').write(content.replace('gp2','gp3'))
+# "
+
+# ── 6. After Envoy LB is provisioned, fill in the LB DNS ──────────────────────
+export LB_DNS=$(kubectl get svc envoy -n backstage \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+echo "LB DNS: $LB_DNS"
+
+for f in backend-core backend-catalog backend-scaffolder backend-techdocs; do
+  python3 -c "
+content = open('k8s/workloads/$f.yaml').read()
+open('k8s/workloads/$f.yaml','w').write(content.replace('<ENVOY_LB_DNS>', '$LB_DNS'))
+"
+done
+
+# Re-apply the updated manifests
+kubectl apply -f k8s/workloads/backend-core.yaml
+kubectl apply -f k8s/workloads/backend-catalog.yaml
+kubectl apply -f k8s/workloads/backend-scaffolder.yaml
+kubectl apply -f k8s/workloads/backend-techdocs.yaml
+```
+
+> **Note:** Steps 1 and 6 modify your local manifest files. If you re-clone the repo,
+> run them again. The template files in git keep `<ECR_REGISTRY>` and `<ENVOY_LB_DNS>`
+> as placeholders on purpose — they must match your environment.
+
+---
+
 ## Mind Map — Full Picture
 
 ```mermaid
