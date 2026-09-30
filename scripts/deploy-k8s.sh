@@ -36,7 +36,7 @@ step() { echo -e "\n${BOLD}━━━ $* ━━━${NC}"; }
 KUBECTL="kubectl"
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
-NAMESPACE="backstage"
+NAMESPACE="backstage-poc"
 DRY_RUN=false
 SKIP_WAIT=false
 FORCE_ROLLOUT=false

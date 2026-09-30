@@ -10,7 +10,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: envoy
-  namespace: backstage
+  namespace: backstage-poc
   labels:
     app: envoy
 spec:
@@ -64,7 +64,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: envoy
-  namespace: backstage
+  namespace: backstage-poc
   labels:
     app: envoy
   annotations:
@@ -84,7 +84,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: envoy-admin
-  namespace: backstage
+  namespace: backstage-poc
   labels:
     app: envoy
 spec:

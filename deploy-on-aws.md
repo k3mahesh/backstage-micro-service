@@ -20,7 +20,7 @@ Work through this table top to bottom — it follows the order you'll encounter 
 | 3 | `<BASE64_ENCODED_GITHUB_TOKEN>` | `k8s/secrets/backstage-secrets.template.yaml` | Before creating the secret | Your GitHub PAT → `echo -n "ghp_xxx" \| base64` |
 | 4 | `<BASE64_ENCODED_POSTGRES_PASSWORD>` | `k8s/secrets/backstage-secrets.template.yaml` | Before creating the secret | Any strong password → `echo -n "mypassword" \| base64` |
 | 5 | `storageClassName: gp2` | `k8s/storage/pvcs.yaml` | Before applying storage | Run `kubectl get storageclass` — use `gp2` or `gp3` depending on what your cluster has |
-| 6 | `<ENVOY_LB_DNS>` | `k8s/workloads/backend-*.yaml` (all 4) | **After** applying `k8s/workloads/envoy.yaml` and the NLB is provisioned | `kubectl get svc envoy -n backstage -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'` |
+| 6 | `<ENVOY_LB_DNS>` | `k8s/workloads/backend-*.yaml` (all 4) | **After** applying `k8s/workloads/envoy.yaml` and the NLB is provisioned | `kubectl get svc envoy -n backstage-poc -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'` |
 
 ### Quick fill-in commands on the bastion host
 
@@ -532,6 +532,40 @@ easy to forget and causes a silent empty nginx image.
 **AWS impact:**
 None directly. Requires ECR repositories to exist — run with `--create-repos`
 on first use.
+
+**Status:** ✅ Done
+
+---
+
+### [2026-09-30] — Rename namespace from backstage to backstage-poc
+
+**Files changed:**
+- `k8s/namespace.yaml`
+- `k8s/configmaps/app-config.yaml`, `app-config-production.yaml`, `envoy.yaml`, `postgres-init.yaml`
+- `k8s/secrets/backstage-secrets.template.yaml`
+- `k8s/storage/pvcs.yaml`
+- `k8s/workloads/backend-core.yaml`, `backend-catalog.yaml`, `backend-scaffolder.yaml`,
+  `backend-techdocs.yaml`, `frontend.yaml`, `envoy.yaml`, `postgres.yaml`, `redis.yaml`
+- `scripts/deploy-k8s.sh` — default `NAMESPACE` changed from `backstage` to `backstage-poc`
+
+**What changed:**
+All K8s manifests now target the `backstage-poc` namespace. The deploy script default was
+updated to match. Envoy remains a `LoadBalancer` Service — AWS NLB is still how traffic
+enters the cluster (no change to ingress strategy).
+
+**Why:**
+The cluster already has production workloads in the `backstage` namespace. Running the
+POC in a separate `backstage-poc` namespace avoids any accidental collision and makes
+cleanup easy (`kubectl delete namespace backstage-poc` removes everything).
+
+**AWS impact:**
+- When `kubectl apply -f k8s/namespace.yaml` runs, a new namespace `backstage-poc` is created
+- Envoy `LoadBalancer` Service in `backstage-poc` will provision a **new** AWS NLB
+  (separate from any existing NLB in the `backstage` namespace)
+- Secret must be created in `backstage-poc`, not `backstage`:
+  ```bash
+  kubectl create secret generic backstage-secrets --namespace backstage-poc ...
+  ```
 
 **Status:** ✅ Done
 

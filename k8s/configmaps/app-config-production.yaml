@@ -7,7 +7,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: app-config-production
-  namespace: backstage
+  namespace: backstage-poc
 data:
   app-config.production.yaml: |
     app:

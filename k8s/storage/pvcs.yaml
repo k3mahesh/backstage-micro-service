@@ -9,7 +9,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: postgres-data
-  namespace: backstage
+  namespace: backstage-poc
 spec:
   accessModes: [ReadWriteOnce]
   storageClassName: gp2   # change to gp3 if your cluster has that StorageClass
@@ -22,7 +22,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: redis-data
-  namespace: backstage
+  namespace: backstage-poc
 spec:
   accessModes: [ReadWriteOnce]
   storageClassName: gp2
@@ -35,7 +35,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: techdocs-storage
-  namespace: backstage
+  namespace: backstage-poc
 spec:
   accessModes: [ReadWriteOnce]
   storageClassName: gp2
