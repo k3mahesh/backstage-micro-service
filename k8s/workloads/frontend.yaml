@@ -22,9 +22,7 @@ spec:
     spec:
       containers:
       - name: frontend
-        # Replace with your ECR image URI
-        # e.g. 123456789.dkr.ecr.ap-south-1.amazonaws.com/backstage-frontend:latest
-        image: <ECR_REGISTRY>/backstage-frontend:latest
+        image: <ECR_REGISTRY>/frontend:latest
         ports:
         - containerPort: 8080
         resources:

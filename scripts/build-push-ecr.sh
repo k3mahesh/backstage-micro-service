@@ -84,11 +84,11 @@ log "Image tag: ${BOLD}$TAG${NC} (also tagged as ${BOLD}latest${NC})"
 # ── Service definitions ───────────────────────────────────────────────────────
 # Array of: "local-name|ecr-repo-name|dockerfile-path"
 SERVICES=(
-  "frontend|backstage-frontend|packages/app/Dockerfile"
-  "backend-core|backstage-backend-core|packages/backend-core/Dockerfile"
-  "backend-catalog|backstage-backend-catalog|packages/backend-catalog/Dockerfile"
-  "backend-scaffolder|backstage-backend-scaffolder|packages/backend-scaffolder/Dockerfile"
-  "backend-techdocs|backstage-backend-techdocs|packages/backend-techdocs/Dockerfile"
+  "frontend|frontend|packages/app/Dockerfile"
+  "backend-core|backend-core|packages/backend-core/Dockerfile"
+  "backend-catalog|backend-catalog|packages/backend-catalog/Dockerfile"
+  "backend-scaffolder|backend-scaffolder|packages/backend-scaffolder/Dockerfile"
+  "backend-techdocs|backend-techdocs|packages/backend-techdocs/Dockerfile"
 )
 
 # Filter to single service if --service was passed
