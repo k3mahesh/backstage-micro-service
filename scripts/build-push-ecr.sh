@@ -16,7 +16,6 @@
 # Required environment / prerequisites:
 #   - AWS CLI configured with credentials that can push to ECR
 #   - Docker running (BuildKit enabled)
-#   - Node.js + corepack installed (for the frontend pre-build step)
 #   - ECR repositories must exist — create them with the pre-flight commands in
 #     deploy-on-aws.md, or run with --create-repos flag
 # ──────────────────────────────────────────────────────────────────────────────
@@ -129,30 +128,8 @@ aws ecr get-login-password --region "$AWS_REGION" \
   | docker login --username AWS --password-stdin "$ECR_REGISTRY"
 ok "ECR login successful"
 
-# ── Frontend: pre-build the React SPA ────────────────────────────────────────
-# The frontend Dockerfile copies packages/app/dist which must exist on the host.
-should_build_frontend=false
-if $BUILD; then
-  for svc in "${SERVICES[@]}"; do
-    [[ "${svc%%|*}" == "frontend" ]] && should_build_frontend=true && break
-  done
-fi
-
-if $should_build_frontend; then
-  step "Pre-building React SPA (yarn workspace app build)"
-  if command -v corepack &>/dev/null; then
-    corepack enable
-    yarn workspace app build
-    ok "React SPA built — packages/app/dist is ready"
-  elif command -v yarn &>/dev/null; then
-    yarn workspace app build
-    ok "React SPA built — packages/app/dist is ready"
-  else
-    err "yarn / corepack not found. Install Node.js and run: corepack enable"
-  fi
-fi
-
 # ── Build and push ────────────────────────────────────────────────────────────
+# Note: frontend Dockerfile uses a multi-stage build — no pre-build step needed.
 FAILED=()
 
 for svc in "${SERVICES[@]}"; do
