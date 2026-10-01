@@ -53,8 +53,7 @@ spec:
           periodSeconds: 10
       volumes:
       - name: redis-data
-        persistentVolumeClaim:
-          claimName: redis-data
+        emptyDir: {}   # POC only — data lost on pod restart; use Valkey in production
 ---
 apiVersion: v1
 kind: Service

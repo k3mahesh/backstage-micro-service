@@ -90,8 +90,7 @@ spec:
         configMap:
           name: app-config-production
       - name: techdocs-storage
-        persistentVolumeClaim:
-          claimName: techdocs-storage
+        emptyDir: {}   # POC only — generated docs lost on pod restart; use S3 in production
 ---
 apiVersion: v1
 kind: Service

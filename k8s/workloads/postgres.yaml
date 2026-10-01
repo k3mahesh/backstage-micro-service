@@ -66,8 +66,7 @@ spec:
           periodSeconds: 10
       volumes:
       - name: postgres-data
-        persistentVolumeClaim:
-          claimName: postgres-data
+        emptyDir: {}   # POC only — data lost on pod restart; use RDS in production
       - name: postgres-init
         configMap:
           name: postgres-init
