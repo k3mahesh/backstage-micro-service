@@ -8,29 +8,73 @@
 
 ---
 
-## Values You Must Fill In Before Deploying
+## Values You Must Provide Before Deploying
 
-Every placeholder below will cause a deployment failure or misconfiguration if left as-is.
-Work through this table top to bottom — it follows the order you'll encounter them.
+There are three groups of values. Each group is set in a different place at a different time.
 
-| # | Placeholder | File(s) | When to fill | How to get the value |
-|---|---|---|---|---|
-| 1 | `<ECR_REGISTRY>` | `k8s/workloads/*.yaml` (all 5) | Before first `kubectl apply` | `aws sts get-caller-identity --query Account --output text` → `<account>.dkr.ecr.ap-south-1.amazonaws.com` |
-| 2 | `<BASE64_ENCODED_BACKEND_SECRET>` | `k8s/secrets/backstage-secrets.template.yaml` | Before creating the secret | `openssl rand -base64 24 \| base64` |
-| 3 | `<BASE64_ENCODED_GITHUB_TOKEN>` | `k8s/secrets/backstage-secrets.template.yaml` | Before creating the secret | Your GitHub PAT → `echo -n "ghp_xxx" \| base64` |
-| 4 | `<BASE64_ENCODED_POSTGRES_PASSWORD>` | `k8s/secrets/backstage-secrets.template.yaml` | Before creating the secret | Any strong password → `echo -n "mypassword" \| base64` |
-| 5 | `storageClassName: gp2` | `k8s/storage/pvcs.yaml` | Before applying storage | Run `kubectl get storageclass` — use `gp2` or `gp3` depending on what your cluster has |
-| 6 | `<ENVOY_LB_DNS>` | `k8s/workloads/backend-*.yaml` (all 4) | **After** applying `k8s/workloads/envoy.yaml` and the NLB is provisioned | `kubectl get svc envoy -n backstage-poc -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'` |
+---
 
-### Quick fill-in commands on the bastion host
+### Group 1 — Before building the frontend image (on your Mac)
+
+These are set as shell environment variables before running `build-push-ecr.sh`. They get baked into the frontend JavaScript bundle at Docker build time. You cannot change them later without rebuilding the image.
+
+| Variable | Where it is used | What to set it to |
+|---|---|---|
+| `APP_BASE_URL` | `packages/app/app-config.yaml` → `app.baseUrl` | Public URL of the app e.g. `https://backstage-poc-aws.opstree.dev` |
+| `BACKEND_BASE_URL` | `packages/app/app-config.yaml` → `backend.baseUrl` | Same public URL — the browser uses this to call backend APIs |
+
+**How to provide:**
+```bash
+# Set on your Mac before building the frontend image
+export APP_BASE_URL=https://backstage-poc-aws.opstree.dev
+export BACKEND_BASE_URL=https://backstage-poc-aws.opstree.dev
+
+# Then build — the script reads these and passes them as Docker build args
+./scripts/build-push-ecr.sh --service frontend
+```
+
+**What happens inside the script:**
+`build-push-ecr.sh` passes them to Docker as `--build-arg APP_BASE_URL=... --build-arg BACKEND_BASE_URL=...`. The Dockerfile picks them up and the Backstage CLI substitutes them into the JavaScript bundle during `yarn workspace app build`.
+
+---
+
+### Group 2 — Already set in K8s manifest files (no action needed)
+
+These values are hardcoded directly in the backend Deployment YAML files under the `env:` block. They are applied automatically when you run `kubectl apply`. You only need to change them if the domain name changes.
+
+| Variable | File | Current value |
+|---|---|---|
+| `APP_BASE_URL` | `k8s/workloads/backend-*.yaml` (all 4) | `https://backstage-poc-aws.opstree.dev` |
+| `BACKEND_BASE_URL` | `k8s/workloads/backend-*.yaml` (all 4) | `https://backstage-poc-aws.opstree.dev` |
+| `CORS_ORIGIN` | `k8s/workloads/backend-*.yaml` (all 4) | `https://backstage-poc-aws.opstree.dev` |
+| `BACKEND_LISTEN_PORT` | `k8s/workloads/backend-*.yaml` (each different) | 7007 / 7008 / 7009 / 7010 |
+| `POSTGRES_HOST` | `k8s/workloads/backend-*.yaml` (all 4) | `postgres` (internal K8s DNS) |
+| `POSTGRES_DB` | `k8s/workloads/backend-*.yaml` (each different) | `backstage_core` / `backstage_catalog` / etc. |
+
+These values flow into the ConfigMap (`k8s/configmaps/app-config.yaml`) which uses `${ENV_VAR}` placeholders. At pod startup, the Node.js process substitutes them from the environment.
+
+---
+
+### Group 3 — Set on the bastion before `kubectl apply` (one-time setup)
+
+These are secrets and deployment-specific values that cannot be committed to git.
+
+| # | What | Where to provide | How to get the value |
+|---|---|---|---|
+| 1 | `ECR_REGISTRY` | Replace `<ECR_REGISTRY>` in `k8s/workloads/*.yaml` (all 5 files) | `aws sts get-caller-identity --query Account --output text` → `<account>.dkr.ecr.ap-south-1.amazonaws.com` |
+| 2 | `BACKEND_SECRET` | K8s secret `backstage-secrets` → key `BACKEND_SECRET` | Random string: `openssl rand -base64 24` — store in SSM |
+| 3 | `GITHUB_TOKEN` | K8s secret `backstage-secrets` → key `GITHUB_TOKEN` | GitHub PAT with `repo`, `read:org`, `read:user` scopes |
+| 4 | `POSTGRES_PASSWORD` | K8s secret `backstage-secrets` → key `POSTGRES_PASSWORD` | Any strong password: `openssl rand -base64 16` — store in SSM |
+| 5 | TLS certificate | K8s secret `backstage-poc-tls` in `backstage-poc` namespace | Copy from `backstage-tls` secret in `backstage` namespace |
+
+**How to provide (run on bastion):**
 
 ```bash
-# ── 1. Resolve ECR registry from your AWS account ────────────────────────────
+# ── 1. Replace <ECR_REGISTRY> in all 5 workload YAML files ───────────────────
 export AWS_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 export AWS_REGION=ap-south-1
 export ECR_REGISTRY=$AWS_ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com
 
-# Replace <ECR_REGISTRY> in all 5 workload files at once
 for f in frontend backend-core backend-catalog backend-scaffolder backend-techdocs; do
   python3 -c "
 content = open('k8s/workloads/$f.yaml').read()
@@ -38,7 +82,7 @@ open('k8s/workloads/$f.yaml','w').write(content.replace('<ECR_REGISTRY>', '$ECR_
 "
 done
 
-# ── 2-4. Create the K8s secret directly from SSM (skip the template file) ─────
+# ── 2-4. Create the K8s secret from SSM (values never touch disk) ─────────────
 kubectl create secret generic backstage-secrets \
   --namespace backstage-poc \
   --from-literal=BACKEND_SECRET="$(aws ssm get-parameter \
@@ -51,33 +95,33 @@ kubectl create secret generic backstage-secrets \
     --name /backstage/poc/POSTGRES_PASSWORD --with-decryption \
     --query Parameter.Value --output text)"
 
-# ── 5. Check which StorageClass your cluster has ──────────────────────────────
-kubectl get storageclass
-# If you see gp3 but pvcs.yaml says gp2, update it:
-# python3 -c "
-# content = open('k8s/storage/pvcs.yaml').read()
-# open('k8s/storage/pvcs.yaml','w').write(content.replace('gp2','gp3'))
-# "
-
-# ── 6. After Envoy LB is provisioned — deploy-k8s.sh does this automatically.
-# Manual fallback if the script timed out waiting for the LB DNS:
-export LB_DNS=$(kubectl get svc envoy -n backstage-poc \
-  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-echo "LB DNS: $LB_DNS"
-
-# Patch APP_BASE_URL in each backend one at a time and wait for each rollout
-for dep in backend-core backend-catalog backend-scaffolder backend-techdocs; do
-  kubectl set env deployment/"$dep" \
-    --namespace backstage-poc \
-    APP_BASE_URL="http://$LB_DNS" \
-    CORS_ORIGIN="http://$LB_DNS"
-  kubectl rollout status deployment/"$dep" --namespace backstage-poc --timeout 180s
-done
+# ── 5. Copy TLS certificate from backstage namespace to backstage-poc ──────────
+# K8s secrets cannot be shared across namespaces — must be copied manually once
+kubectl get secret backstage-tls -n backstage -o json \
+  | jq 'del(.metadata.namespace,.metadata.resourceVersion,.metadata.uid,.metadata.creationTimestamp,.metadata.annotations,.metadata.labels)' \
+  | jq '.metadata.name = "backstage-poc-tls"' \
+  | kubectl apply -n backstage-poc -f -
 ```
 
-> **Note:** Only step 1 modifies your local manifest files. The `<ECR_REGISTRY>` placeholder
-> is replaced on the bastion — if you re-clone, run step 2 again.
-> `APP_BASE_URL` is now patched live on running deployments (not in YAML files), so no YAML edits needed for the LB DNS.
+---
+
+### Summary — where each value lives
+
+```
+Mac (build time)
+├── export APP_BASE_URL=https://...        ← shell env var, read by build-push-ecr.sh
+└── export BACKEND_BASE_URL=https://...   ← shell env var, read by build-push-ecr.sh
+        │
+        ▼ passed as --build-arg to Docker
+        ▼ Backstage CLI bakes into JS bundle
+        frontend Docker image (ECR)
+
+Bastion / K8s (deploy time)
+├── k8s/workloads/*.yaml                  ← APP_BASE_URL, BACKEND_BASE_URL, CORS_ORIGIN hardcoded here
+├── k8s/configmaps/app-config.yaml        ← uses ${ENV_VAR} placeholders, filled at pod startup
+├── K8s Secret "backstage-secrets"        ← BACKEND_SECRET, GITHUB_TOKEN, POSTGRES_PASSWORD
+└── K8s Secret "backstage-poc-tls"        ← TLS certificate for HTTPS
+```
 
 ---
 
@@ -1352,6 +1396,127 @@ export BACKEND_BASE_URL=https://backstage-poc-aws.opstree.dev
 **AWS impact:** Requires rebuilding and pushing the frontend image (see above).
 
 **Status:** ✅ Done — image needs to be rebuilt
+
+---
+
+### [2026-10-01] — Fixed 401 errors on catalog API (JWKS fetch + kubernetes plugin crash)
+
+**Files changed:**
+- `k8s/configmaps/app-config.yaml` — added `auth` to discovery endpoints; fixed `kubernetes` config
+
+**Symptoms:**
+- Every page in the Backstage UI showed "Failed to load resource: 401" for catalog API calls
+- backend-catalog logs showed repeated warnings and a startup crash
+
+**Two separate problems were found:**
+
+---
+
+#### Problem 1 — backend-catalog could not verify login tokens (root cause of 401)
+
+**What was happening in simple terms:**
+
+When you log into Backstage, backend-core gives you a token (like a signed badge). Every time you call another backend like backend-catalog, it checks that badge is genuine. To check it, backend-catalog needs to fetch a "public key" from backend-core — this is called the JWKS endpoint.
+
+The JWKS URL backend-catalog was using was `https://backstage-poc-aws.opstree.dev/api/auth/.well-known/jwks.json` — the **public internet URL**.
+
+The problem: **pods inside the cluster cannot reach the cluster's own public URL**. When backend-catalog sent a request to that URL, it got no response (not a 200 OK). Without the public key, it could not verify the token. So it rejected every single request with 401.
+
+The error in the logs was:
+```
+JOSEError: Expected 200 OK from the JSON Web Key Set HTTP response
+```
+
+**Why was it using the public URL?**
+
+In `app-config.yaml`, the `discovery.endpoints` section tells each backend where to find the other backends. There was no entry for the `auth` plugin (which lives in backend-core). When a plugin is not listed in discovery, Backstage falls back to `backend.baseUrl` — which is the public URL `https://backstage-poc-aws.opstree.dev`. That URL works from the browser but not from inside the cluster.
+
+**The fix:**
+
+Added an explicit discovery entry for `auth` (and other backend-core plugins) pointing to the internal Kubernetes service name:
+
+```yaml
+# Before — no entry for auth, so Backstage used the public URL (unreachable inside cluster)
+discovery:
+  endpoints:
+    - target: 'http://backend-catalog:7008/api/{{pluginId}}'
+      plugins: [catalog, search, kubernetes]
+    ...
+
+# After — auth now uses internal DNS, reachable pod-to-pod
+discovery:
+  endpoints:
+    - target: 'http://backend-core:7007/api/{{pluginId}}'
+      plugins: [auth, proxy, permission, notifications, signals, user-settings]
+    - target: 'http://backend-catalog:7008/api/{{pluginId}}'
+      plugins: [catalog, search, kubernetes]
+    ...
+```
+
+Now backend-catalog fetches the JWKS directly from `http://backend-core:7007/api/auth/.well-known/jwks.json` — a direct pod-to-pod call inside the cluster that always works.
+
+---
+
+#### Problem 2 — kubernetes plugin crashed on startup, bringing down backend-catalog
+
+**What was happening in simple terms:**
+
+backend-catalog runs the Kubernetes plugin (which shows K8s resources in the Backstage UI). This plugin requires at minimum a `clusterLocatorMethods` setting in the config — even if it's empty, the key must be present. The config only had:
+
+```yaml
+kubernetes: {}   # completely empty — plugin cannot start
+```
+
+This made the kubernetes plugin crash when backend-catalog started. Backstage treats a plugin startup crash as a fatal error — it brought the **entire backend-catalog process down**. The pod restarted, crashed again, restarted again (crash loop).
+
+The error in the logs was:
+```
+Plugin 'kubernetes' threw an error during startup
+Missing required config value at 'kubernetes.clusterLocatorMethods'
+Backend startup failed
+```
+
+**The fix:**
+
+Added the required config structure with an empty clusters list so the plugin starts cleanly:
+
+```yaml
+# Before
+kubernetes: {}
+
+# After
+kubernetes:
+  serviceLocatorMethod:
+    type: multiTenant
+  clusterLocatorMethods:
+    - type: config
+      clusters: []   # empty — plugin starts without crashing, just shows no clusters
+```
+
+---
+
+**How to apply (on bastion):**
+
+```bash
+git pull origin main
+kubectl apply -f k8s/configmaps/app-config.yaml -n backstage-poc
+
+# Restart all backends — they all share this config
+for dep in backend-core backend-catalog backend-scaffolder backend-techdocs; do
+  kubectl rollout restart deployment/$dep -n backstage-poc
+  kubectl rollout status deployment/$dep -n backstage-poc --timeout 180s
+done
+```
+
+**Verify the fix:**
+```bash
+# Should show no JWKS errors after restart
+kubectl logs deployment/backend-catalog -n backstage-poc --tail=20 | grep -E "error|warn|JWKS"
+```
+
+**AWS impact:** None — ConfigMap change only, no image rebuild needed.
+
+**Status:** ✅ Done
 
 ---
 
