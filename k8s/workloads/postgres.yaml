@@ -49,11 +49,11 @@ spec:
           subPath: init.sh
         resources:
           requests:
-            cpu: 250m
-            memory: 512Mi
+            cpu: 100m
+            memory: 200Mi
           limits:
-            cpu: "1"
-            memory: 1Gi
+            cpu: 500m
+            memory: 512Mi
         readinessProbe:
           exec:
             command: [pg_isready, -U, backstage]

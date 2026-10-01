@@ -743,6 +743,147 @@ All 5 images built and pushed from local Mac to ECR.
 
 ---
 
+### [2026-10-01] — Added node tolerations to all workloads
+
+**Files changed:**
+- `k8s/workloads/postgres.yaml`, `redis.yaml` — toleration `dedicated=database:NoSchedule`
+- `k8s/workloads/frontend.yaml`, `backend-core.yaml`, `backend-catalog.yaml`, `backend-scaffolder.yaml`, `backend-techdocs.yaml`, `envoy.yaml` — toleration `dedicated=application:NoSchedule`
+
+**What changed:**
+Added `tolerations` block to every workload pod spec matching the node taints present in the cluster.
+
+**Why:**
+The EKS cluster has two node groups with `NoSchedule` taints:
+- `dedicated=application:NoSchedule` — for app workloads
+- `dedicated=database:NoSchedule` — for data workloads
+
+Without tolerations, all pods stayed `Pending` indefinitely — the scheduler could not place them on any node.
+
+**AWS impact:** None. Tolerations are a scheduling hint, not an AWS resource.
+
+**Status:** ✅ Done
+
+---
+
+### [2026-10-01] — Replaced PVCs with emptyDir for postgres, redis, techdocs
+
+**Files changed:**
+- `k8s/workloads/postgres.yaml` — `postgres-data` volume: PVC → `emptyDir`
+- `k8s/workloads/redis.yaml` — `redis-data` volume: PVC → `emptyDir`
+- `k8s/workloads/backend-techdocs.yaml` — `techdocs-storage` volume: PVC → `emptyDir`
+- `scripts/deploy-k8s.sh` — removed the PVC apply step
+- `k8s/storage/pvcs.yaml` — no longer applied (kept for reference)
+
+**What changed:**
+All three persistent volumes now use `emptyDir` (ephemeral pod-local storage) instead of `PersistentVolumeClaims` backed by EBS.
+
+**Why:**
+- The EKS cluster did not have the EBS CSI driver installed, causing all PVCs to stay in `Pending` and blocking every pod
+- This is a POC — data persistence is not required; postgres and redis data resets on pod restart, which is acceptable
+- Production will use RDS (postgres) and Valkey (redis), so EBS volumes were never going to be the long-term solution
+
+**AWS impact:**
+- EBS CSI driver and `AmazonEBSCSIDriverPolicy` are **no longer required** for this POC
+- No EBS volumes will be provisioned — no AWS cost for storage
+
+**Status:** ✅ Done
+
+---
+
+### [2026-10-01] — Fixed subPath mismatch in backend volume mounts
+
+**Files changed:**
+- `k8s/workloads/backend-core.yaml`, `backend-catalog.yaml`, `backend-scaffolder.yaml`, `backend-techdocs.yaml`
+
+**What changed:**
+Changed `subPath: app-config-production.yaml` → `subPath: app-config.production.yaml` in the `app-config-production` volumeMount of all 4 backend Deployments.
+
+**Why:**
+The `subPath` value must exactly match the key name inside the ConfigMap's `data:` block. The ConfigMap key was `app-config.production.yaml` (dot) but the mount used `app-config-production.yaml` (hyphen). This caused the container to fail at startup with:
+```
+OCI runtime create failed: error mounting ... to rootfs at "/app/app-config.production.yaml": not a directory
+```
+
+**AWS impact:** None. Config fix only — requires pod restart to take effect.
+
+**Status:** ✅ Done
+
+---
+
+### [2026-10-01] — deploy-k8s.sh: stuck pod cleanup on re-run
+
+**Files changed:** `scripts/deploy-k8s.sh`
+
+**What changed:**
+Added a cleanup step before applying workloads that deletes any pods in `Pending` or `Failed` state. This runs automatically on every execution of the script.
+
+**Why:**
+When re-running the deploy script after a failed deployment (e.g. due to taint issues or config errors), old stuck pods from the previous run were not cleaned up. Kubernetes would create new pods (new ReplicaSet for Deployments) while old ones remained, leading to duplicate pods and confusing state. The cleanup ensures controllers always recreate pods fresh with the latest spec.
+
+**AWS impact:** None.
+
+**Status:** ✅ Done
+
+---
+
+### [2026-10-01] — Added teardown-k8s.sh script
+
+**Files changed:** `scripts/teardown-k8s.sh` (new)
+
+**What changed:**
+New script to cleanly delete all POC resources from the cluster in reverse dependency order:
+1. Envoy LoadBalancer → triggers NLB deprovision immediately
+2. Application Deployments
+3. StatefulSets (postgres, redis)
+4. ConfigMaps and Secrets
+5. PVCs
+6. Namespace
+
+Flags: `--dry-run`, `--yes` (skip confirmation), `--keep-pvcs`, `--namespace`.
+
+**Why:**
+`kubectl delete namespace backstage-poc` works but doesn't wait for NLB deprovision and doesn't give visibility into what's being deleted. The script deletes Envoy first to start NLB cleanup as early as possible, and waits for the namespace to fully terminate.
+
+**AWS impact:**
+Running this script will deprovision the AWS NLB created by the Envoy LoadBalancer Service. ECR images and SSM parameters are NOT deleted by this script — separate commands are documented inside the script output.
+
+**Status:** ✅ Done
+
+---
+
+### [2026-10-01] — Merged app-config into a single file per environment
+
+**Files changed:**
+- `k8s/configmaps/app-config.yaml` — rewritten as complete merged config
+- `k8s/configmaps/app-config-production.yaml` — **deleted**
+- `app-config.production.yaml` (repo root) — **deleted**
+- `packages/backend-core/Dockerfile`, `backend-catalog/Dockerfile`, `backend-scaffolder/Dockerfile`, `backend-techdocs/Dockerfile` — removed `COPY app-config.production.yaml` and changed CMD from two `--config` flags to one
+- `k8s/workloads/backend-*.yaml` (all 4) — removed `app-config-production` volume and volumeMount
+
+**What changed:**
+Previously Backstage loaded two config files at runtime and merged them:
+```
+--config app-config.yaml --config app-config.production.yaml
+```
+Now it loads only one:
+```
+--config app-config.yaml
+```
+The single ConfigMap (`k8s/configmaps/app-config.yaml`) contains the complete config with all values as `${ENV_VAR}` references. Environment variables are injected by each Deployment's `env:` block. The database client is hardcoded to `pg` in the ConfigMap (always postgres in EKS). The root `app-config.yaml` is kept for local dev only (SQLite, localhost URLs) — in EKS the ConfigMap mount overwrites it.
+
+**Why:**
+Two config files being merged at runtime made it hard to reason about the final effective config. A single self-contained config is easier to debug, understand, and extend. New environments only need different env vars — no new config files.
+
+**AWS impact:**
+Requires rebuilding and re-pushing all 4 backend images (CMD changed). Re-run:
+```bash
+./scripts/build-push-ecr.sh
+```
+
+**Status:** ✅ Done — images need to be rebuilt
+
+---
+
 ### [YYYY-MM-DD] — Template for future entries
 
 **Files changed:**
@@ -762,12 +903,12 @@ All 5 images built and pushed from local Mac to ECR.
 
 - [x] **ECR repos** — created, all 5 images pushed (tag `bc44691` / `latest`)
 - [x] **Node IAM role ECR** — `AmazonEC2ContainerRegistryFullAccess` attached
-- [ ] **EKS cluster** — confirm EBS CSI driver add-on is installed
-- [ ] **Node IAM role EBS** — attach `AmazonEBSCSIDriverPolicy`
+- [x] **Node tolerations** — added to all workload manifests
+- [x] **EBS CSI driver** — no longer needed (switched to emptyDir for POC)
+- [ ] **Rebuild + push images** — CMD changed in all 4 backend Dockerfiles (single `--config` flag)
 - [ ] **SSM parameters** — create BACKEND_SECRET, GITHUB_TOKEN, POSTGRES_PASSWORD in `/backstage/poc/`
 - [ ] **Replace `<ECR_REGISTRY>`** in all `k8s/workloads/*.yaml` files on bastion
 - [ ] **Create namespace** — `kubectl apply -f k8s/namespace.yaml`
 - [ ] **Create `backstage-secrets`** K8s secret in `backstage-poc` namespace
-- [ ] **StorageClass** — verify cluster has `gp2` or change to `gp3` in `k8s/storage/pvcs.yaml`
 - [ ] **Run `./scripts/deploy-k8s.sh`** and verify all pods come up healthy
 - [ ] **Get Envoy LB DNS** — verify `APP_BASE_URL` is patched and Backstage UI loads
