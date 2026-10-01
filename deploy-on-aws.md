@@ -407,21 +407,95 @@ All traffic goes through the Envoy NLB. Use `$LB_DNS` from the deploy script out
 
 ---
 
-## SSM Parameters to Create
+## SSM Parameters — What They Are and How to Create Them
+
+The K8s secret is populated from three SSM parameters. You must create them **before** running
+`kubectl create secret`. Here is what each value is and how to get it.
+
+---
+
+### BACKEND_SECRET
+
+A random string used by Backstage internally to sign auth tokens and session cookies.
+The value doesn't matter — it just needs to be random and the same across all backend pods.
 
 ```bash
-# Generate BACKEND_SECRET (no Node.js needed)
-SECRET=$(openssl rand -base64 24)
+# Generate a random value
+openssl rand -base64 24
+# Example output: 7K2mXpQzR9vLnJwYcT4sBdHuFgA1eN3i
 
-aws ssm put-parameter --name /backstage/poc/BACKEND_SECRET \
-  --value "$SECRET" --type SecureString --region ap-south-1
-
-aws ssm put-parameter --name /backstage/poc/GITHUB_TOKEN \
-  --value "ghp_yourtoken" --type SecureString --region ap-south-1
-
-aws ssm put-parameter --name /backstage/poc/POSTGRES_PASSWORD \
-  --value "yourpassword" --type SecureString --region ap-south-1
+# Store it in SSM
+aws ssm put-parameter \
+  --name /backstage/poc/BACKEND_SECRET \
+  --value "$(openssl rand -base64 24)" \
+  --type SecureString \
+  --region ap-south-1
 ```
+
+---
+
+### GITHUB_TOKEN
+
+A GitHub Personal Access Token (PAT) so Backstage can read your GitHub org —
+used by the catalog (repositories, teams, users) and the scaffolder (create repos from templates).
+
+**How to generate:**
+1. Go to **GitHub → Settings → Developer Settings → Personal Access Tokens → Tokens (classic)**
+2. Click **Generate new token (classic)**
+3. Select scopes: `repo`, `read:org`, `read:user`
+4. Copy the token (starts with `ghp_`)
+
+> If you don't have GitHub integration yet, put a dummy value — the catalog won't sync
+> but the rest of the app will still start.
+
+```bash
+aws ssm put-parameter \
+  --name /backstage/poc/GITHUB_TOKEN \
+  --value "ghp_your_actual_token_here" \
+  --type SecureString \
+  --region ap-south-1
+```
+
+---
+
+### POSTGRES_PASSWORD
+
+The password for the PostgreSQL database running inside the cluster. You choose this —
+it just needs to match what the `postgres` StatefulSet uses (set via the same K8s secret).
+
+```bash
+# Generate a random password
+openssl rand -base64 16
+# Example: mK9xPqR2vLnJ4wYc
+
+# Store it in SSM
+aws ssm put-parameter \
+  --name /backstage/poc/POSTGRES_PASSWORD \
+  --value "$(openssl rand -base64 16)" \
+  --type SecureString \
+  --region ap-south-1
+```
+
+---
+
+### Verify all three parameters exist
+
+```bash
+aws ssm get-parameters \
+  --names /backstage/poc/BACKEND_SECRET /backstage/poc/GITHUB_TOKEN /backstage/poc/POSTGRES_PASSWORD \
+  --with-decryption \
+  --region ap-south-1 \
+  --query 'Parameters[*].{Name:Name,Value:Value}'
+```
+
+---
+
+### Why SSM and not hardcode the values?
+
+SSM keeps secrets out of your shell history, out of git, and gives you a single place to
+rotate them later. The bastion's IAM role already has SSM read access. The `kubectl create secret`
+command pulls values directly from SSM and injects them into Kubernetes — values never touch a
+file on disk.
 
 ---
 
