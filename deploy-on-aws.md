@@ -15,7 +15,7 @@ Work through this table top to bottom — it follows the order you'll encounter 
 
 | # | Placeholder | File(s) | When to fill | How to get the value |
 |---|---|---|---|---|
-| 1 | `<ECR_REGISTRY>` | `k8s/workloads/*.yaml` (all 5) | Before first `kubectl apply` | **Already resolved:** `724446904294.dkr.ecr.ap-south-1.amazonaws.com` |
+| 1 | `<ECR_REGISTRY>` | `k8s/workloads/*.yaml` (all 5) | Before first `kubectl apply` | `aws sts get-caller-identity --query Account --output text` → `<account>.dkr.ecr.ap-south-1.amazonaws.com` |
 | 2 | `<BASE64_ENCODED_BACKEND_SECRET>` | `k8s/secrets/backstage-secrets.template.yaml` | Before creating the secret | `openssl rand -base64 24 \| base64` |
 | 3 | `<BASE64_ENCODED_GITHUB_TOKEN>` | `k8s/secrets/backstage-secrets.template.yaml` | Before creating the secret | Your GitHub PAT → `echo -n "ghp_xxx" \| base64` |
 | 4 | `<BASE64_ENCODED_POSTGRES_PASSWORD>` | `k8s/secrets/backstage-secrets.template.yaml` | Before creating the secret | Any strong password → `echo -n "mypassword" \| base64` |
@@ -25,8 +25,10 @@ Work through this table top to bottom — it follows the order you'll encounter 
 ### Quick fill-in commands on the bastion host
 
 ```bash
-# ── 1. ECR registry is already known ──────────────────────────────────────────
-export ECR_REGISTRY=724446904294.dkr.ecr.ap-south-1.amazonaws.com
+# ── 1. Resolve ECR registry from your AWS account ────────────────────────────
+export AWS_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+export AWS_REGION=ap-south-1
+export ECR_REGISTRY=$AWS_ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com
 
 # Replace <ECR_REGISTRY> in all 5 workload files at once
 for f in frontend backend-core backend-catalog backend-scaffolder backend-techdocs; do
@@ -93,7 +95,7 @@ mindmap
         Namespace backstage-poc
         Node Group
           t3.medium x2 minimum
-      ECR (724446904294.dkr.ecr.ap-south-1.amazonaws.com)
+      ECR ($ECR_REGISTRY)
         frontend
         backend-core
         backend-catalog
@@ -296,7 +298,9 @@ cd backstage-micro-service
 git pull origin main
 
 # Replace <ECR_REGISTRY> in all 5 workload manifests
-export ECR_REGISTRY=724446904294.dkr.ecr.ap-south-1.amazonaws.com
+export AWS_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+export AWS_REGION=ap-south-1
+export ECR_REGISTRY=$AWS_ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com
 for f in frontend backend-core backend-catalog backend-scaffolder backend-techdocs; do
   python3 -c "
 content = open('k8s/workloads/$f.yaml').read()
@@ -553,11 +557,11 @@ All 5 images built and pushed from local Mac to ECR.
 
 | Image | ECR URI |
 |---|---|
-| frontend | `724446904294.dkr.ecr.ap-south-1.amazonaws.com/frontend:bc44691` |
-| backend-core | `724446904294.dkr.ecr.ap-south-1.amazonaws.com/backend-core:bc44691` |
-| backend-catalog | `724446904294.dkr.ecr.ap-south-1.amazonaws.com/backend-catalog:bc44691` |
-| backend-scaffolder | `724446904294.dkr.ecr.ap-south-1.amazonaws.com/backend-scaffolder:bc44691` |
-| backend-techdocs | `724446904294.dkr.ecr.ap-south-1.amazonaws.com/backend-techdocs:bc44691` |
+| frontend | `$ECR_REGISTRY/frontend:bc44691` |
+| backend-core | `$ECR_REGISTRY/backend-core:bc44691` |
+| backend-catalog | `$ECR_REGISTRY/backend-catalog:bc44691` |
+| backend-scaffolder | `$ECR_REGISTRY/backend-scaffolder:bc44691` |
+| backend-techdocs | `$ECR_REGISTRY/backend-techdocs:bc44691` |
 
 **Blockers hit:**
 1. `ecr:GetAuthorizationToken` denied — fixed by attaching `AmazonEC2ContainerRegistryFullAccess` to the EC2 role
