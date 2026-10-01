@@ -19,6 +19,11 @@ spec:
       labels:
         app: backend-techdocs
     spec:
+      tolerations:
+      - key: dedicated
+        operator: Equal
+        value: application
+        effect: NoSchedule
       containers:
       - name: backend-techdocs
         image: <ECR_REGISTRY>/backend-techdocs:latest

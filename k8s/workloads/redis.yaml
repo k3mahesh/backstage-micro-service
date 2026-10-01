@@ -20,6 +20,11 @@ spec:
       labels:
         app: redis
     spec:
+      tolerations:
+      - key: dedicated
+        operator: Equal
+        value: database
+        effect: NoSchedule
       containers:
       - name: redis
         image: redis:7-alpine

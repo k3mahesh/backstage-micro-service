@@ -19,6 +19,11 @@ spec:
       labels:
         app: backend-catalog
     spec:
+      tolerations:
+      - key: dedicated
+        operator: Equal
+        value: application
+        effect: NoSchedule
       containers:
       - name: backend-catalog
         image: <ECR_REGISTRY>/backend-catalog:latest

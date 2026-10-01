@@ -21,6 +21,11 @@ spec:
       labels:
         app: postgres
     spec:
+      tolerations:
+      - key: dedicated
+        operator: Equal
+        value: database
+        effect: NoSchedule
       containers:
       - name: postgres
         image: postgres:16-alpine

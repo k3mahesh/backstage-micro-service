@@ -4,7 +4,7 @@
 # The DNS of this ELB is what you set as APP_BASE_URL / CORS_ORIGIN in other pods.
 #
 # After applying, get the LB DNS:
-#   kubectl get svc envoy -n backstage -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+#   kubectl get svc envoy -n backstage-poc -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
 # ──────────────────────────────────────────────────────────────────────────────
 apiVersion: apps/v1
 kind: Deployment
@@ -23,6 +23,11 @@ spec:
       labels:
         app: envoy
     spec:
+      tolerations:
+      - key: dedicated
+        operator: Equal
+        value: application
+        effect: NoSchedule
       containers:
       - name: envoy
         image: envoyproxy/envoy:v1.31-latest

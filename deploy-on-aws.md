@@ -407,6 +407,50 @@ Other useful modes:
 
 ---
 
+## Teardown — Deleting Everything
+
+Use `scripts/teardown-k8s.sh` to cleanly remove all POC resources from the cluster.
+The script deletes in reverse dependency order and waits for the AWS NLB to start deprovisioning
+before removing the namespace.
+
+```bash
+# Dry-run first — see what would be deleted without actually deleting anything
+./scripts/teardown-k8s.sh --dry-run
+
+# Full teardown (prompts you to type the namespace name to confirm)
+./scripts/teardown-k8s.sh
+
+# Skip the confirmation prompt
+./scripts/teardown-k8s.sh --yes
+
+# Keep EBS volumes (PVCs) but delete everything else
+./scripts/teardown-k8s.sh --keep-pvcs
+```
+
+**Deletion order:**
+1. Envoy LoadBalancer Service → triggers AWS NLB deprovision
+2. Application Deployments (frontend, backend-core, catalog, scaffolder, techdocs)
+3. Data layer StatefulSets (postgres, redis)
+4. ConfigMaps and Secrets
+5. PersistentVolumeClaims (EBS volumes) — skip with `--keep-pvcs`
+6. Namespace `backstage-poc`
+
+**What the script does NOT delete** (manual cleanup if needed):
+
+```bash
+# Delete ECR repositories (removes all images too — irreversible)
+for svc in frontend backend-core backend-catalog backend-scaffolder backend-techdocs; do
+  aws ecr delete-repository --repository-name $svc --force --region ap-south-1
+done
+
+# Delete SSM parameters
+aws ssm delete-parameter --name /backstage/poc/BACKEND_SECRET   --region ap-south-1
+aws ssm delete-parameter --name /backstage/poc/GITHUB_TOKEN     --region ap-south-1
+aws ssm delete-parameter --name /backstage/poc/POSTGRES_PASSWORD --region ap-south-1
+```
+
+---
+
 ## Useful kubectl Commands
 
 ```bash
