@@ -3,8 +3,7 @@
 # teardown-k8s.sh
 #
 # Deletes all Backstage POC resources from EKS — in the correct reverse order.
-# Waits for the Envoy LoadBalancer (AWS NLB) to be fully deprovisioned before
-# deleting the namespace, so no orphaned AWS resources are left behind.
+# Safe to run — does not touch the shared NLB (owned by ingress-nginx controller).
 #
 # Usage:
 #   ./scripts/teardown-k8s.sh                    # delete everything (prompts for confirmation)
@@ -18,7 +17,7 @@
 #   - All ConfigMaps and Secrets in the namespace
 #   - PersistentVolumeClaims (and therefore the EBS volumes) — unless --keep-pvcs
 #   - The namespace itself
-#   - The AWS NLB provisioned by the Envoy LoadBalancer Service
+#   - The Ingress resource (backstage-poc-ingress)
 #
 # What is NOT deleted by this script:
 #   - ECR repositories and images
@@ -89,17 +88,19 @@ fi
 K="kubectl --namespace $NAMESPACE"
 [[ $DRY_RUN == true ]] && K="$K --dry-run=client"
 
-# ── 1. Delete Envoy first — so AWS starts deprovisioning the NLB ──────────────
-step "1/6  Removing Envoy LoadBalancer (triggers NLB deprovision)"
-log "Deleting Envoy Service (LoadBalancer) and Deployment..."
+# ── 1. Delete Ingress first — removes the nginx routing rule for the POC ──────
+step "1/6  Removing Ingress and Envoy"
+log "Deleting Ingress (removes nginx routing rule for backstage-poc-aws.opstree.dev)..."
 if [[ $DRY_RUN == false ]]; then
+  kubectl delete ingress backstage-poc-ingress --namespace "$NAMESPACE" --ignore-not-found
   kubectl delete service envoy --namespace "$NAMESPACE" --ignore-not-found
   kubectl delete deployment envoy --namespace "$NAMESPACE" --ignore-not-found
   kubectl delete service envoy-admin --namespace "$NAMESPACE" --ignore-not-found
 else
-  log "  (dry-run) would delete: service/envoy, deployment/envoy, service/envoy-admin"
+  log "  (dry-run) would delete: ingress/backstage-poc-ingress, service/envoy, deployment/envoy, service/envoy-admin"
 fi
-ok "Envoy deleted — AWS NLB deprovision started (runs in background)"
+ok "Ingress and Envoy deleted"
+warn "The shared NLB (ingress-nginx) is NOT affected — other apps (backstage, keycloak) remain running"
 
 # ── 2. Delete application workloads ──────────────────────────────────────────
 step "2/6  Removing application Deployments"

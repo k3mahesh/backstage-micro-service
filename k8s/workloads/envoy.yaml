@@ -1,10 +1,12 @@
 # ──────────────────────────────────────────────────────────────────────────────
-# Envoy — Ingress proxy
-# Type LoadBalancer → AWS provisions an ELB (Classic or NLB depending on annotations).
-# The DNS of this ELB is what you set as APP_BASE_URL / CORS_ORIGIN in other pods.
+# Envoy — Internal routing proxy
+# Receives traffic from the nginx ingress controller and routes to the correct
+# backend service based on the request path.
 #
-# After applying, get the LB DNS:
-#   kubectl get svc envoy -n backstage-poc -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+# Traffic flow:
+#   internet → nginx ingress (shared NLB) → envoy:80 → frontend/backend-*
+#
+# The Envoy Service is ClusterIP — no AWS NLB is created by this file.
 # ──────────────────────────────────────────────────────────────────────────────
 apiVersion: apps/v1
 kind: Deployment
@@ -69,7 +71,8 @@ spec:
         configMap:
           name: envoy-config
 ---
-# Public-facing LoadBalancer Service — AWS provisions an ELB
+# Internal ClusterIP Service — nginx ingress routes to this.
+# Traffic path: internet → nginx ingress (NLB) → envoy → frontend / backends
 apiVersion: v1
 kind: Service
 metadata:
@@ -77,9 +80,6 @@ metadata:
   namespace: backstage-poc
   labels:
     app: envoy
-  annotations:
-    # Use NLB instead of Classic ELB (better performance, supports WebSocket)
-    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
 spec:
   selector:
     app: envoy
@@ -87,7 +87,7 @@ spec:
   - name: http
     port: 80
     targetPort: 80
-  type: LoadBalancer
+  type: ClusterIP
 ---
 # Internal-only service for Envoy admin — never expose publicly
 apiVersion: v1

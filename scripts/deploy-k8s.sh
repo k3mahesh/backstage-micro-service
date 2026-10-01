@@ -155,19 +155,19 @@ wait_rollout() {
 }
 
 # ── 1. Namespace ──────────────────────────────────────────────────────────────
-step "1/6  Namespace"
+step "1/7  Namespace"
 kubectl apply -f k8s/namespace.yaml
 ok "Namespace '$NAMESPACE' ready"
 
 # ── 2. ConfigMaps ─────────────────────────────────────────────────────────────
-step "2/6  ConfigMaps"
+step "2/7  ConfigMaps"
 for f in k8s/configmaps/*.yaml; do
   apply "$f" "$(basename $f)"
 done
 ok "All ConfigMaps applied"
 
 # ── 3. Clean up stuck pods from any previous run ─────────────────────────────
-step "3/6  Cleaning up stuck pods"
+step "3/7  Cleaning up stuck pods"
 if [[ $DRY_RUN == false ]]; then
   STUCK=$(kubectl get pods --namespace "$NAMESPACE" \
     --field-selector='status.phase in (Pending,Failed)' \
@@ -185,7 +185,7 @@ else
 fi
 
 # ── 4. Data layer: PostgreSQL + Redis ─────────────────────────────────────────
-step "4/6  Data layer (postgres + redis)"
+step "4/7  Data layer (postgres + redis)"
 apply k8s/workloads/postgres.yaml "postgres.yaml"
 apply k8s/workloads/redis.yaml    "redis.yaml"
 
@@ -195,7 +195,7 @@ wait_rollout statefulset redis    120s
 # ── 5. Application backends — one at a time to avoid resource crunch ──────────
 # Each service is applied and waited on before the next one starts.
 # This prevents multiple pods competing for memory simultaneously.
-step "5/6  Application backends (sequential — one at a time)"
+step "5/7  Application backends (sequential — one at a time)"
 
 log "  [1/6] backend-core"
 apply k8s/workloads/backend-core.yaml "backend-core.yaml"
@@ -221,46 +221,10 @@ log "  [6/6] envoy"
 apply k8s/workloads/envoy.yaml "envoy.yaml"
 wait_rollout deployment envoy 180s
 
-# ── Wait for Envoy LoadBalancer DNS ──────────────────────────────────────────
-if [[ $DRY_RUN == false && $SKIP_WAIT == false ]]; then
-  step "Waiting for Envoy LoadBalancer DNS"
-  log "AWS NLB provisioning can take 1-3 minutes..."
-
-  LB_DNS=""
-  for i in $(seq 1 30); do
-    LB_DNS=$(kubectl get svc envoy \
-      --namespace "$NAMESPACE" \
-      -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
-    if [[ -n "$LB_DNS" ]]; then
-      ok "LoadBalancer DNS: ${BOLD}$LB_DNS${NC}"
-      break
-    fi
-    log "  Still waiting... ($i/30)"
-    sleep 10
-  done
-
-  if [[ -z "$LB_DNS" ]]; then
-    warn "LoadBalancer DNS not yet assigned after 5 minutes."
-    warn "Get it later with:"
-    warn "  kubectl get svc envoy -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'"
-    warn "Then patch backends:"
-    warn "  LB_DNS=<dns> ./scripts/deploy-k8s.sh --patch-url"
-  else
-    # ── Patch APP_BASE_URL in all backends — one at a time ──────────────────
-    step "Patching APP_BASE_URL in all backend deployments (sequential)"
-    APP_URL="http://$LB_DNS"
-    for dep in backend-core backend-catalog backend-scaffolder backend-techdocs; do
-      log "  Patching $dep → APP_BASE_URL=$APP_URL"
-      kubectl set env deployment/"$dep" \
-        --namespace "$NAMESPACE" \
-        APP_BASE_URL="$APP_URL" \
-        CORS_ORIGIN="$APP_URL"
-      ok "  $dep patched — waiting for rollout..."
-      wait_rollout deployment "$dep" 180s
-    done
-    ok "All backends running with APP_BASE_URL=$APP_URL"
-  fi
-fi
+# ── 6. Ingress ────────────────────────────────────────────────────────────────
+step "6/6  Ingress (nginx ingress controller)"
+apply k8s/ingress.yaml "ingress.yaml"
+ok "Ingress applied — nginx ingress controller will route backstage-poc-aws.opstree.dev → envoy"
 
 # ── Force rollout if requested ────────────────────────────────────────────────
 if [[ $FORCE_ROLLOUT == true && $DRY_RUN == false ]]; then
@@ -284,11 +248,14 @@ if [[ $DRY_RUN == false ]]; then
   echo -e "${BOLD}Services:${NC}"
   kubectl get svc --namespace "$NAMESPACE"
 
-  if [[ -n "${LB_DNS:-}" ]]; then
-    echo ""
-    ok "Backstage is available at: ${BOLD}http://$LB_DNS${NC}"
-    ok "Envoy admin (internal):    kubectl port-forward svc/envoy-admin 9901:9901 -n $NAMESPACE"
-  fi
+  echo ""
+  echo -e "${BOLD}Ingress:${NC}"
+  kubectl get ingress --namespace "$NAMESPACE"
+
+  echo ""
+  ok "Backstage POC will be available at: ${BOLD}https://backstage-poc-aws.opstree.dev${NC}"
+  warn "Ensure DNS CNAME is set: backstage-poc-aws.opstree.dev → $(kubectl get ingress backstage-ingress -n backstage -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo '<shared-nlb-dns>')"
+  ok "Envoy admin (internal):  kubectl port-forward svc/envoy-admin 9901:9901 -n $NAMESPACE"
 else
   ok "(dry-run complete — nothing was applied)"
 fi
@@ -299,4 +266,5 @@ echo "  Watch pods live:       kubectl get pods -n $NAMESPACE -w"
 echo "  Tail backend-core:     kubectl logs -f deployment/backend-core -n $NAMESPACE"
 echo "  Tail all backends:     kubectl logs -f -l 'app in (backend-core,backend-catalog)' -n $NAMESPACE"
 echo "  Describe failing pod:  kubectl describe pod -l app=<name> -n $NAMESPACE"
+echo "  Check ingress:         kubectl describe ingress backstage-poc-ingress -n $NAMESPACE"
 echo "  Force re-deploy:       ./scripts/deploy-k8s.sh --rollout"

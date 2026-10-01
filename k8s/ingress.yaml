@@ -1,0 +1,57 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Ingress — Backstage POC
+#
+# Uses the cluster's existing nginx ingress controller (ingress-nginx namespace).
+# Routes all traffic for backstage-poc-aws.opstree.dev to Envoy, which then
+# distributes requests internally to frontend / backend-* services.
+#
+# Traffic flow:
+#   browser → shared NLB → nginx ingress controller → envoy:80 → services
+#
+# Prerequisites:
+#   - DNS: add a CNAME for backstage-poc-aws.opstree.dev pointing to the same
+#     NLB as backstage-aws.opstree.dev (check with: kubectl get ingress -n backstage)
+#   - TLS: cert-manager ClusterIssuer must exist in the cluster
+#     (check with: kubectl get clusterissuer)
+# ──────────────────────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: backstage-poc-ingress
+  namespace: backstage-poc
+  labels:
+    app: backstage-poc
+  annotations:
+    # Use the nginx ingress controller (same one used by backstage + keycloak)
+    kubernetes.io/ingress.class: "nginx"
+
+    # Increase timeouts for WebSocket connections (Backstage signals / live updates)
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+
+    # Allow larger request bodies (scaffolder template uploads etc.)
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+
+    # ── TLS via cert-manager ─────────────────────────────────────────────────
+    # Uncomment once you confirm the ClusterIssuer name:
+    #   kubectl get clusterissuer
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  # ── TLS ─────────────────────────────────────────────────────────────────────
+  # Uncomment after adding the cert-manager annotation above.
+  # tls:
+  # - hosts:
+  #   - backstage-poc-aws.opstree.dev
+  #   secretName: backstage-poc-tls
+  rules:
+  - host: backstage-poc-aws.opstree.dev
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: envoy
+            port:
+              number: 80

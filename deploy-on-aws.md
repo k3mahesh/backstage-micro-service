@@ -972,6 +972,40 @@ The doc described `deploy-k8s.sh` as handling everything automatically but gave 
 
 ---
 
+### [2026-10-01] — Switched from Envoy LoadBalancer to nginx ingress controller
+
+**Files changed:**
+- `k8s/workloads/envoy.yaml` — Envoy Service changed from `LoadBalancer` → `ClusterIP`; removed NLB annotation
+- `k8s/ingress.yaml` — **new file**: Ingress resource routing `backstage-poc-aws.opstree.dev` → Envoy
+- `k8s/workloads/backend-core.yaml`, `backend-catalog.yaml`, `backend-scaffolder.yaml`, `backend-techdocs.yaml` — `APP_BASE_URL` and `CORS_ORIGIN` changed from `http://<ENVOY_LB_DNS>` to `https://backstage-poc-aws.opstree.dev`
+- `scripts/deploy-k8s.sh` — removed "Wait for Envoy LB DNS" and "Patch APP_BASE_URL" steps; added ingress apply step (6/7); updated step counter 6→7
+- `scripts/teardown-k8s.sh` — step 1 now deletes Ingress instead of waiting for NLB deprovision
+
+**What changed:**
+Previously Envoy had a `LoadBalancer` Service which provisioned a dedicated AWS NLB. Now the Envoy Service is `ClusterIP` and a Kubernetes Ingress resource routes traffic from the **shared** nginx ingress NLB to Envoy.
+
+Traffic flow before: `internet → Envoy NLB → Envoy → services`
+Traffic flow after:  `internet → nginx ingress NLB → nginx ingress controller → Envoy → services`
+
+**Why:**
+- The cluster already has nginx ingress controller + shared NLB used by `backstage` and `keycloak`
+- Reusing the shared NLB avoids provisioning a second NLB (cost + time)
+- nginx ingress supports HTTPS via cert-manager, fixing the `crypto.randomUUID` browser error that occurs on plain HTTP
+- `APP_BASE_URL` is now a static value in the YAML (known hostname) instead of a dynamic value patched after LB provisioning
+
+**AWS impact:**
+- The Envoy NLB (`a5023b2aa68b54f7083ab7d64a273948...`) will be deprovisioned when `kubectl apply` runs (Service type change removes the AWS resource)
+- No new NLB is created — traffic goes through the existing shared NLB
+- Add DNS CNAME: `backstage-poc-aws.opstree.dev` → same NLB as `backstage-aws.opstree.dev`
+
+**Prerequisites before applying:**
+1. Add DNS CNAME for `backstage-poc-aws.opstree.dev`
+2. Check ClusterIssuer name: `kubectl get clusterissuer` — then uncomment TLS section in `k8s/ingress.yaml`
+
+**Status:** ✅ Done
+
+---
+
 ### [YYYY-MM-DD] — Template for future entries
 
 **Files changed:**
