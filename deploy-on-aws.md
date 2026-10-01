@@ -309,7 +309,24 @@ open('k8s/workloads/$f.yaml','w').write(content.replace('<ECR_REGISTRY>', '$ECR_
 done
 ```
 
-### Step 3 — On the Bastion Host: Create the Secret
+### Step 3 — On the Bastion Host: Create the Namespace
+
+The namespace must exist before you can create the secret or apply any other manifests.
+
+```bash
+kubectl apply -f k8s/namespace.yaml
+
+# Verify it was created
+kubectl get namespace backstage-poc
+```
+
+Expected output:
+```
+NAME            STATUS   AGE
+backstage-poc   Active   5s
+```
+
+### Step 4 — On the Bastion Host: Create the Secret
 
 Only needed once. Skip if the secret already exists in the `backstage-poc` namespace.
 
@@ -364,7 +381,7 @@ kubectl create secret generic backstage-secrets \
     --query Parameter.Value --output text)"
 ```
 
-### Step 4 — On the Bastion Host: Deploy Everything
+### Step 5 — On the Bastion Host: Deploy Everything
 
 ```bash
 # Dry-run first to validate manifests and check for missed placeholders
@@ -705,6 +722,7 @@ All 5 images built and pushed from local Mac to ECR.
 - [ ] **Node IAM role EBS** — attach `AmazonEBSCSIDriverPolicy`
 - [ ] **SSM parameters** — create BACKEND_SECRET, GITHUB_TOKEN, POSTGRES_PASSWORD in `/backstage/poc/`
 - [ ] **Replace `<ECR_REGISTRY>`** in all `k8s/workloads/*.yaml` files on bastion
+- [ ] **Create namespace** — `kubectl apply -f k8s/namespace.yaml`
 - [ ] **Create `backstage-secrets`** K8s secret in `backstage-poc` namespace
 - [ ] **StorageClass** — verify cluster has `gp2` or change to `gp3` in `k8s/storage/pvcs.yaml`
 - [ ] **Run `./scripts/deploy-k8s.sh`** and verify all pods come up healthy
