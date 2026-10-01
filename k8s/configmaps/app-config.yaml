@@ -49,6 +49,12 @@ data:
 
     discovery:
       endpoints:
+        # backend-core hosts: auth, proxy, permissions, notifications, signals, user-settings
+        # Must be listed explicitly so other backends use the internal K8s DNS name
+        # instead of falling back to backend.baseUrl (the public URL), which is
+        # unreachable from inside the cluster (no hairpin routing through nginx ingress).
+        - target: 'http://backend-core:7007/api/{{pluginId}}'
+          plugins: [auth, proxy, permission, notifications, signals, user-settings]
         - target: 'http://backend-catalog:7008/api/{{pluginId}}'
           plugins: [catalog, search, kubernetes]
         - target: 'http://backend-scaffolder:7009/api/{{pluginId}}'
@@ -86,7 +92,12 @@ data:
           rules:
             - allow: [User, Group]
 
-    kubernetes: {}
+    kubernetes:
+      serviceLocatorMethod:
+        type: multiTenant
+      clusterLocatorMethods:
+        - type: config
+          clusters: []   # no clusters configured — plugin starts without crashing
 
     permission:
       enabled: true
