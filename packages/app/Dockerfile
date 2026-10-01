@@ -16,6 +16,10 @@ COPY packages/backend-techdocs/package.json ./packages/backend-techdocs/
 RUN corepack enable && yarn install --frozen-lockfile
 
 # Copy source and build
+# app-config.yaml is required at build time so Backstage can bake app.title,
+# app.baseUrl etc. into the JS bundle. Without it the app falls back to
+# "mock-config" and throws "Missing required config value at 'app.title'".
+COPY app-config.yaml ./
 COPY packages/app ./packages/app
 RUN yarn workspace app build
 
