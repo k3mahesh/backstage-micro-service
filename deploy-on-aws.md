@@ -220,6 +220,113 @@ scripts/
 
 ---
 
+## App Config — Which File, When, and From Where
+
+Each component owns a dedicated `app-config.yaml`. There is no single shared config — each package reads its own file at the appropriate time.
+
+### Summary table
+
+| Component | Config file | Read at | Mechanism |
+|---|---|---|---|
+| **frontend** | `packages/app/app-config.yaml` | **Docker build time** | Backstage CLI compiles values into the JS bundle during `yarn workspace app build` |
+| **backend-core** | `k8s/configmaps/app-config.yaml` | **Container startup** | ConfigMap mounted at `/app/app-config.yaml`; Node.js reads it when the process starts |
+| **backend-catalog** | `k8s/configmaps/app-config.yaml` | **Container startup** | Same — ConfigMap mount overwrites the file baked into the image |
+| **backend-scaffolder** | `k8s/configmaps/app-config.yaml` | **Container startup** | Same |
+| **backend-techdocs** | `k8s/configmaps/app-config.yaml` | **Container startup** | Same |
+
+> **Local development (docker-compose):** All components fall back to the root `app-config.yaml` (localhost URLs, SQLite). That file is not used in EKS.
+
+---
+
+### Frontend — build time
+
+```
+packages/app/app-config.yaml
+        │
+        │  COPY packages/app ./packages/app
+        │  cp packages/app/app-config.yaml app-config.yaml   ← Dockerfile
+        ▼
+  yarn workspace app build
+        │
+        │  Backstage CLI reads process.env and substitutes
+        │  ${APP_BASE_URL} and ${BACKEND_BASE_URL}
+        ▼
+  packages/app/dist/*.js   ← values are frozen inside compiled JS
+        │
+        ▼
+  nginx Docker image   ← only serves these static files; no config file inside
+```
+
+**Where the values come from:**
+`packages/app/Dockerfile` declares `ARG APP_BASE_URL` and `ARG BACKEND_BASE_URL`.
+`scripts/build-push-ecr.sh` reads those from host environment variables and passes them as `--build-arg`.
+
+```bash
+# Set before building the frontend image
+export APP_BASE_URL=https://backstage-poc-aws.opstree.dev
+export BACKEND_BASE_URL=https://backstage-poc-aws.opstree.dev
+./scripts/build-push-ecr.sh --service frontend
+```
+
+**Why the nginx container has no config file at runtime:**
+nginx just serves pre-built HTML/JS files. There is no Node.js process inside the container to read a config at startup. The values must exist at build time, not runtime.
+
+---
+
+### Backends — runtime
+
+```
+k8s/configmaps/app-config.yaml  (committed to git)
+        │
+        │  kubectl apply -f k8s/configmaps/app-config.yaml
+        ▼
+  ConfigMap "app-config" in namespace backstage-poc
+        │
+        │  volumeMounts:
+        │    mountPath: /app/app-config.yaml   ← overwrites the file baked into the image
+        ▼
+  Node.js process starts → reads /app/app-config.yaml
+        │
+        │  Backstage reads process.env and substitutes ${ENV_VAR} tokens
+        │  (e.g. ${BACKEND_BASE_URL}, ${POSTGRES_PASSWORD})
+        ▼
+  Config is live — env vars injected from each Deployment's env: block
+```
+
+**Where the values come from:**
+Each backend Deployment (`k8s/workloads/backend-*.yaml`) declares an `env:` block with the concrete values. Backstage substitutes `${TOKEN}` references at startup from `process.env`.
+
+```yaml
+# k8s/workloads/backend-core.yaml
+env:
+- name: BACKEND_BASE_URL
+  value: "https://backstage-poc-aws.opstree.dev"
+- name: POSTGRES_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: backstage-secrets
+      key: POSTGRES_PASSWORD
+```
+
+**How to confirm which config the backend is using (on bastion):**
+```bash
+# Print the mounted config file inside the running pod
+kubectl exec -n backstage-poc deployment/backend-core -- cat /app/app-config.yaml
+
+# Check what env vars the pod resolved (look for the substituted values in startup logs)
+kubectl logs -n backstage-poc deployment/backend-core | head -30
+```
+
+---
+
+### Why backends don't also bake config at build time
+
+The ConfigMap contains secrets (`${POSTGRES_PASSWORD}`, `${BACKEND_SECRET}`) that are only known inside the cluster — you cannot put them into a Docker image. The image is pushed to ECR (a shared registry) and must not contain any secrets. The ConfigMap + K8s Secret combination injects them safely at runtime.
+
+The frontend has no secrets — only public URLs — so it is safe (and necessary) to bake them in at build time.
+
+---
+
 ## Pre-Flight Checklist — AWS Setup
 
 ### EKS Cluster
@@ -1149,6 +1256,105 @@ This error occurs because `crypto.randomUUID()` is a Web Crypto API method that 
 
 ---
 
+### [2026-10-01] — Fixed BACKEND_BASE_URL to use public URL instead of internal K8s DNS
+
+**Files changed:**
+- `k8s/workloads/backend-core.yaml`
+- `k8s/workloads/backend-catalog.yaml`
+- `k8s/workloads/backend-scaffolder.yaml`
+- `k8s/workloads/backend-techdocs.yaml`
+
+**What changed:**
+`BACKEND_BASE_URL` env var changed from the internal Kubernetes DNS name to the public hostname for all 4 backend Deployments:
+
+| Deployment | Before | After |
+|---|---|---|
+| backend-core | `http://backend-core:7007` | `https://backstage-poc-aws.opstree.dev` |
+| backend-catalog | `http://backend-catalog:7008` | `https://backstage-poc-aws.opstree.dev` |
+| backend-scaffolder | `http://backend-scaffolder:7009` | `https://backstage-poc-aws.opstree.dev` |
+| backend-techdocs | `http://backend-techdocs:7010` | `https://backstage-poc-aws.opstree.dev` |
+
+**Why:**
+`BACKEND_BASE_URL` maps to `backend.baseUrl` in `app-config.yaml`. Backstage's frontend reads this value and uses it to construct all API call URLs in the browser. When it was set to the internal K8s service name (e.g. `http://backend-catalog:7008`), the browser tried to make requests directly to that internal address, causing two errors visible in the browser console:
+
+1. **Mixed Content** — The page is served over HTTPS but the API calls targeted `http://...`. Browsers block HTTP requests from HTTPS pages as a security policy.
+   ```
+   The page at 'https://backstage-poc-aws.opstree.dev/...' requested insecure content
+   from 'http://backend-catalog:7008/...'. This content was blocked and must be served over HTTPS.
+   ```
+
+2. **CORS / Fetch blocked** — The browser cannot resolve internal Kubernetes DNS names (`backend-catalog`, `backend-core` etc.) — these are only resolvable inside the cluster, not from the public internet.
+   ```
+   Fetch API cannot load http://backend-catalog:7008/... due to access control checks.
+   ```
+
+Setting `BACKEND_BASE_URL` to `https://backstage-poc-aws.opstree.dev` means the browser calls `https://backstage-poc-aws.opstree.dev/api/catalog/...` — the same public host as the page. nginx ingress → Envoy then routes these to the correct backend by path prefix.
+
+**Important distinction — two types of backend communication:**
+
+| Communication | URL used | Set by |
+|---|---|---|
+| **Browser → backend** (frontend API calls) | `https://backstage-poc-aws.opstree.dev` | `BACKEND_BASE_URL` (this fix) |
+| **Backend → backend** (service-to-service) | `http://backend-catalog:7008` (internal DNS) | `discovery.endpoints` in `app-config.yaml` (unchanged) |
+
+`discovery.endpoints` in `k8s/configmaps/app-config.yaml` continues to use internal K8s DNS for server-side service discovery — those calls never go through the browser and are not affected.
+
+**How to apply on bastion (patch running pods — no redeploy needed):**
+```bash
+for dep in backend-core backend-catalog backend-scaffolder backend-techdocs; do
+  kubectl set env deployment/$dep \
+    --namespace backstage-poc \
+    BACKEND_BASE_URL="https://backstage-poc-aws.opstree.dev"
+  kubectl rollout status deployment/$dep --namespace backstage-poc --timeout 180s
+done
+```
+
+**AWS impact:** None.
+
+**Status:** ✅ Done
+
+---
+
+### [2026-10-01] — Dedicated frontend app-config + bake URLs via Docker build args
+
+**Files changed:**
+- `packages/app/app-config.yaml` — **new file**: frontend-specific config with `${ENV_VAR}` references
+- `packages/app/Dockerfile` — declares `ARG`/`ENV` for `APP_BASE_URL` and `BACKEND_BASE_URL`; copies `packages/app/app-config.yaml` instead of root `app-config.yaml`
+- `scripts/build-push-ecr.sh` — passes `--build-arg APP_BASE_URL` and `--build-arg BACKEND_BASE_URL` when building the `frontend` service; fails early if either env var is not set
+
+**What changed:**
+
+Previously the frontend Dockerfile copied the root `app-config.yaml` (shared with local dev), which had hardcoded `http://localhost:3000` and `http://localhost:7007`. These values got compiled into the JS bundle, causing browser errors on EKS:
+```
+The page at https://backstage-poc-aws.opstree.dev/... requested insecure content
+from http://localhost:7007/api/auth/guest/refresh. This content was blocked.
+```
+
+Now each component owns its own dedicated config:
+
+| Component | Config file |
+|---|---|
+| frontend | `packages/app/app-config.yaml` |
+| all backends | `k8s/configmaps/app-config.yaml` |
+
+`packages/app/app-config.yaml` uses `${APP_BASE_URL}` and `${BACKEND_BASE_URL}` references (same pattern as the ConfigMap), which Backstage CLI substitutes from `process.env` during `yarn workspace app build`. The values reach the build via Docker `--build-arg`.
+
+**Why not use a K8s env var to override the URL at runtime?**
+The frontend image is nginx serving pre-built static files. There is no Node.js process running — nothing reads a config file or environment variables at container startup. The URLs must be baked in at Docker build time. The build args are the equivalent of K8s env vars, but applied one stage earlier (at image build, not pod start).
+
+**How to build the frontend for EKS:**
+```bash
+export APP_BASE_URL=https://backstage-poc-aws.opstree.dev
+export BACKEND_BASE_URL=https://backstage-poc-aws.opstree.dev
+./scripts/build-push-ecr.sh --service frontend
+```
+
+**AWS impact:** Requires rebuilding and pushing the frontend image (see above).
+
+**Status:** ✅ Done — image needs to be rebuilt
+
+---
+
 ### [YYYY-MM-DD] — Template for future entries
 
 **Files changed:**
@@ -1173,7 +1379,7 @@ This error occurs because `crypto.randomUUID()` is a Web Crypto API method that 
 - [x] **Rolling update strategy** — `maxSurge: 0, maxUnavailable: 1` added to all 6 Deployments
 - [x] **Ingress** — `k8s/ingress.yaml` applied, POC reachable at `backstage-poc-aws.opstree.dev`
 - [x] **Envoy NLB decommissioned** — Envoy Service changed to ClusterIP; shared NLB now handles ingress
-- [ ] **Rebuild frontend image** — `COPY app-config.yaml` added to Dockerfile; run `./scripts/build-push-ecr.sh --service frontend` on Mac
+- [ ] **Rebuild frontend image** — dedicated `packages/app/app-config.yaml` added; export `APP_BASE_URL` and `BACKEND_BASE_URL` then run `./scripts/build-push-ecr.sh --service frontend` on Mac
 - [ ] **Rebuild backend images** — CMD changed (single `--config` flag); run `./scripts/build-push-ecr.sh` on Mac
 - [ ] **Copy TLS secret** — `kubectl get secret backstage-tls -n backstage ...` → copy to `backstage-poc` namespace as `backstage-poc-tls`
 - [ ] **Apply TLS ingress** — `kubectl apply -f k8s/ingress.yaml` after secret is copied; verify PORTS shows `80, 443`

@@ -3,6 +3,15 @@ ARG TARGETPLATFORM=linux/amd64
 # ── Stage 1: Build React SPA ──────────────────────────────────────────────────
 FROM --platform=${TARGETPLATFORM} node:22-bookworm-slim AS build
 
+# Build-time variables — passed via --build-arg when building this image.
+# The Backstage CLI substitutes ${APP_BASE_URL} and ${BACKEND_BASE_URL}
+# references in packages/app/app-config.yaml into the compiled JS bundle.
+# Values are set in scripts/build-push-ecr.sh from host environment variables.
+ARG APP_BASE_URL
+ARG BACKEND_BASE_URL
+ENV APP_BASE_URL=${APP_BASE_URL} \
+    BACKEND_BASE_URL=${BACKEND_BASE_URL}
+
 WORKDIR /app
 
 # Copy workspace definition files first (better layer caching)
@@ -15,13 +24,12 @@ COPY packages/backend-techdocs/package.json ./packages/backend-techdocs/
 
 RUN corepack enable && yarn install --frozen-lockfile
 
-# Copy source and build
-# app-config.yaml is required at build time so Backstage can bake app.title,
-# app.baseUrl etc. into the JS bundle. Without it the app falls back to
-# "mock-config" and throws "Missing required config value at 'app.title'".
-COPY app-config.yaml ./
+# Use the frontend-specific app-config (packages/app/app-config.yaml).
+# It uses ${APP_BASE_URL} and ${BACKEND_BASE_URL} references which the
+# Backstage CLI substitutes from ENV above during `yarn workspace app build`.
 COPY packages/app ./packages/app
-RUN yarn workspace app build
+RUN cp packages/app/app-config.yaml app-config.yaml && \
+    yarn workspace app build
 
 # ── Stage 2: Serve with nginx ─────────────────────────────────────────────────
 FROM --platform=${TARGETPLATFORM} nginx:1.27-alpine

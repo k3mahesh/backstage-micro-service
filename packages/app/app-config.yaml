@@ -1,0 +1,114 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Frontend app config — used at Docker build time only.
+# `yarn workspace app build` reads this file and bakes the values into the JS
+# bundle.  ${ENV_VAR} references are substituted by the Backstage CLI from the
+# Docker build ARGs declared in packages/app/Dockerfile.
+#
+# To build for EKS:
+#   export APP_BASE_URL=https://backstage-poc-aws.opstree.dev
+#   export BACKEND_BASE_URL=https://backstage-poc-aws.opstree.dev
+#   ./scripts/build-push-ecr.sh --service frontend
+# ──────────────────────────────────────────────────────────────────────────────
+
+app:
+  title: Scaffolded Backstage App
+  baseUrl: ${APP_BASE_URL}
+
+  packages: all
+
+  extensions:
+    - page:catalog:
+        config:
+          path: /
+
+    - home-page-widget:home/toolkit:
+        config:
+          tools:
+            - url: https://backstage.io/docs
+              label: Docs
+              icon: docs
+            - url: https://github.com/backstage/backstage
+              label: GitHub
+              icon: github
+            - url: https://github.com/backstage/backstage/blob/master/CONTRIBUTING.md
+              label: Contributing
+              icon: docs
+            - url: https://backstage.io/plugins
+              label: Plugins Directory
+              icon: kind:component
+            - url: https://github.com/backstage/backstage/issues/new/choose
+              label: Submit New Issue
+              icon: github
+    - home-page-widget:home/world-clock:
+        config:
+          clockConfigs:
+            - label: NYC
+              timeZone: America/New_York
+            - label: UTC
+              timeZone: UTC
+            - label: STO
+              timeZone: Europe/Stockholm
+            - label: TYO
+              timeZone: Asia/Tokyo
+    - page:home:
+        config:
+          defaultConfig:
+            - component: HomePageSearchBar
+              column: 0
+              row: 0
+              width: 12
+              height: 2
+              deletable: false
+            - component: GettingStarted
+              column: 0
+              row: 1
+              width: 4
+              height: 11
+            - component: HomePageStarredEntities
+              column: 4
+              row: 2
+              width: 4
+              height: 4
+            - component: HomePageRandomJoke
+              column: 8
+              row: 2
+              width: 4
+              height: 4
+            - component: HomePageToolkit
+              column: 4
+              row: 6
+              width: 4
+              height: 3
+            - component: HomePageWorldClock
+              column: 8
+              row: 6
+              width: 4
+              height: 3
+            - component: HomePageMostVisited
+              column: 4
+              row: 9
+              width: 4
+              height: 4
+            - component: HomePageRecentlyVisited
+              column: 8
+              row: 9
+              width: 4
+              height: 4
+
+organization:
+  name: My Company
+
+backend:
+  # baseUrl is read by the frontend JS to construct browser → backend API URLs.
+  # Must be the public-facing URL (the same host the browser uses).
+  baseUrl: ${BACKEND_BASE_URL}
+
+auth:
+  providers:
+    guest:
+      dangerouslyAllowOutsideDevelopment: true
+
+scaffolder: {}
+
+permission:
+  enabled: true

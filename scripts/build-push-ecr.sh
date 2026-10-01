@@ -142,12 +142,28 @@ for svc in "${SERVICES[@]}"; do
     log "  Dockerfile : $dockerfile"
     log "  Image      : $full_image:$TAG"
 
+    # Frontend requires APP_BASE_URL and BACKEND_BASE_URL at build time so
+    # the Backstage CLI can substitute them into the compiled JS bundle.
+    # Set these as environment variables before running this script, e.g.:
+    #   export APP_BASE_URL=https://backstage-poc-aws.opstree.dev
+    #   export BACKEND_BASE_URL=https://backstage-poc-aws.opstree.dev
+    BUILD_ARGS=()
+    if [[ "$local_name" == "frontend" ]]; then
+      [[ -z "${APP_BASE_URL:-}" ]]     && err "APP_BASE_URL env var is required to build the frontend image"
+      [[ -z "${BACKEND_BASE_URL:-}" ]] && err "BACKEND_BASE_URL env var is required to build the frontend image"
+      BUILD_ARGS+=(--build-arg "APP_BASE_URL=${APP_BASE_URL}")
+      BUILD_ARGS+=(--build-arg "BACKEND_BASE_URL=${BACKEND_BASE_URL}")
+      log "  APP_BASE_URL     : $APP_BASE_URL"
+      log "  BACKEND_BASE_URL : $BACKEND_BASE_URL"
+    fi
+
     if docker build \
       --platform linux/amd64 \
       --file "$dockerfile" \
       --tag "$full_image:$TAG" \
       --tag "$full_image:latest" \
       --progress plain \
+      "${BUILD_ARGS[@]}" \
       .; then
       ok "Built $local_name"
     else
