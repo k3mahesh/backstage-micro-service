@@ -313,18 +313,55 @@ done
 
 Only needed once. Skip if the secret already exists in the `backstage-poc` namespace.
 
+**3a. First, store the values in SSM** (skip if already done — see [SSM Parameters](#ssm-parameters--what-they-are-and-how-to-create-them) section for details on each value):
+
+```bash
+# BACKEND_SECRET — random string, Backstage uses it to sign auth tokens
+aws ssm put-parameter \
+  --name /backstage/poc/BACKEND_SECRET \
+  --value "$(openssl rand -base64 24)" \
+  --type SecureString \
+  --region ap-south-1
+
+# GITHUB_TOKEN — GitHub PAT with repo, read:org, read:user scopes
+aws ssm put-parameter \
+  --name /backstage/poc/GITHUB_TOKEN \
+  --value "ghp_your_actual_token_here" \
+  --type SecureString \
+  --region ap-south-1
+
+# POSTGRES_PASSWORD — password for the postgres StatefulSet
+aws ssm put-parameter \
+  --name /backstage/poc/POSTGRES_PASSWORD \
+  --value "$(openssl rand -base64 16)" \
+  --type SecureString \
+  --region ap-south-1
+```
+
+**3b. Verify all three parameters exist:**
+
+```bash
+aws ssm get-parameters \
+  --names /backstage/poc/BACKEND_SECRET /backstage/poc/GITHUB_TOKEN /backstage/poc/POSTGRES_PASSWORD \
+  --with-decryption \
+  --region ap-south-1 \
+  --query 'Parameters[*].{Name:Name,Value:Value}'
+```
+
+**3c. Create the K8s secret from SSM (values never touch a file on disk):**
+
 ```bash
 kubectl create secret generic backstage-secrets \
   --namespace backstage-poc \
-  --from-literal=BACKEND_SECRET=$(aws ssm get-parameter \
+  --from-literal=BACKEND_SECRET="$(aws ssm get-parameter \
     --name /backstage/poc/BACKEND_SECRET --with-decryption \
-    --query Parameter.Value --output text) \
-  --from-literal=GITHUB_TOKEN=$(aws ssm get-parameter \
+    --query Parameter.Value --output text)" \
+  --from-literal=GITHUB_TOKEN="$(aws ssm get-parameter \
     --name /backstage/poc/GITHUB_TOKEN --with-decryption \
-    --query Parameter.Value --output text) \
-  --from-literal=POSTGRES_PASSWORD=$(aws ssm get-parameter \
+    --query Parameter.Value --output text)" \
+  --from-literal=POSTGRES_PASSWORD="$(aws ssm get-parameter \
     --name /backstage/poc/POSTGRES_PASSWORD --with-decryption \
-    --query Parameter.Value --output text)
+    --query Parameter.Value --output text)"
 ```
 
 ### Step 4 — On the Bastion Host: Deploy Everything
