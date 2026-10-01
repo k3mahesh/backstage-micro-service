@@ -25,25 +25,27 @@ metadata:
     # Use the nginx ingress controller (same one used by backstage + keycloak)
     kubernetes.io/ingress.class: "nginx"
 
+    # Force HTTP → HTTPS redirect (matches existing backstage-ingress behaviour)
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+
     # Increase timeouts for WebSocket connections (Backstage signals / live updates)
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
 
     # Allow larger request bodies (scaffolder template uploads etc.)
     nginx.ingress.kubernetes.io/proxy-body-size: "50m"
-
-    # ── TLS via cert-manager ─────────────────────────────────────────────────
-    # Uncomment once you confirm the ClusterIssuer name:
-    #   kubectl get clusterissuer
-    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
 spec:
   ingressClassName: nginx
-  # ── TLS ─────────────────────────────────────────────────────────────────────
-  # Uncomment after adding the cert-manager annotation above.
-  # tls:
-  # - hosts:
-  #   - backstage-poc-aws.opstree.dev
-  #   secretName: backstage-poc-tls
+  # TLS — uses the wildcard cert copied from the backstage namespace.
+  # Copy command (run once on bastion):
+  #   kubectl get secret backstage-tls -n backstage -o json \
+  #     | jq 'del(.metadata.namespace,.metadata.resourceVersion,.metadata.uid,.metadata.creationTimestamp,.metadata.annotations,.metadata.labels)' \
+  #     | jq '.metadata.name = "backstage-poc-tls"' \
+  #     | kubectl apply -n backstage-poc -f -
+  tls:
+  - hosts:
+    - backstage-poc-aws.opstree.dev
+    secretName: backstage-poc-tls
   rules:
   - host: backstage-poc-aws.opstree.dev
     http:
