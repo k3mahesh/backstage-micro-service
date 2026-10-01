@@ -14,6 +14,11 @@ spec:
   selector:
     matchLabels:
       app: backend-catalog
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0        # never start a new pod before the old one is gone
+      maxUnavailable: 1  # terminate the old pod first, then start the new one
   template:
     metadata:
       labels:

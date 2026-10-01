@@ -59,29 +59,25 @@ kubectl get storageclass
 # open('k8s/storage/pvcs.yaml','w').write(content.replace('gp2','gp3'))
 # "
 
-# ── 6. After Envoy LB is provisioned, fill in the LB DNS ──────────────────────
-# (deploy-k8s.sh does this automatically — manual fallback below)
+# ── 6. After Envoy LB is provisioned — deploy-k8s.sh does this automatically.
+# Manual fallback if the script timed out waiting for the LB DNS:
 export LB_DNS=$(kubectl get svc envoy -n backstage-poc \
   -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
 echo "LB DNS: $LB_DNS"
 
-for f in backend-core backend-catalog backend-scaffolder backend-techdocs; do
-  python3 -c "
-content = open('k8s/workloads/$f.yaml').read()
-open('k8s/workloads/$f.yaml','w').write(content.replace('<ENVOY_LB_DNS>', '$LB_DNS'))
-"
+# Patch APP_BASE_URL in each backend one at a time and wait for each rollout
+for dep in backend-core backend-catalog backend-scaffolder backend-techdocs; do
+  kubectl set env deployment/"$dep" \
+    --namespace backstage-poc \
+    APP_BASE_URL="http://$LB_DNS" \
+    CORS_ORIGIN="http://$LB_DNS"
+  kubectl rollout status deployment/"$dep" --namespace backstage-poc --timeout 180s
 done
-
-# Re-apply the updated manifests
-kubectl apply -f k8s/workloads/backend-core.yaml -n backstage-poc
-kubectl apply -f k8s/workloads/backend-catalog.yaml -n backstage-poc
-kubectl apply -f k8s/workloads/backend-scaffolder.yaml -n backstage-poc
-kubectl apply -f k8s/workloads/backend-techdocs.yaml -n backstage-poc
 ```
 
-> **Note:** Steps 1 and 6 modify your local manifest files. If you re-clone the repo,
-> run them again. The template files in git keep `<ECR_REGISTRY>` and `<ENVOY_LB_DNS>`
-> as placeholders on purpose — they must match your environment.
+> **Note:** Only step 1 modifies your local manifest files. The `<ECR_REGISTRY>` placeholder
+> is replaced on the bastion — if you re-clone, run step 2 again.
+> `APP_BASE_URL` is now patched live on running deployments (not in YAML files), so no YAML edits needed for the LB DNS.
 
 ---
 
@@ -403,6 +399,80 @@ Other useful modes:
 ./scripts/deploy-k8s.sh --rollout       # force rolling restart of all deployments
 ./scripts/deploy-k8s.sh --skip-wait     # apply everything without waiting
 ./scripts/deploy-k8s.sh --namespace myns # deploy to a different namespace
+```
+
+### Step 6 — Get the Envoy LoadBalancer DNS and Verify Backstage
+
+The deploy script waits up to 5 minutes for the AWS NLB to assign a DNS name, then automatically patches `APP_BASE_URL` in all backend deployments (one at a time). You don't need to do anything — but here is what to check and what to do if it times out.
+
+#### Check the LB DNS was assigned
+
+```bash
+kubectl get svc envoy -n backstage-poc
+# Look for an EXTERNAL-IP value — it will be a long AWS hostname
+# e.g. abc123.elb.ap-south-1.amazonaws.com
+
+# Or get just the hostname:
+kubectl get svc envoy -n backstage-poc \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+```
+
+> AWS NLB provisioning takes **1–3 minutes** after `envoy.yaml` is applied.
+> If `EXTERNAL-IP` shows `<pending>`, wait and re-run the command.
+
+#### Verify APP_BASE_URL was patched correctly
+
+```bash
+# Check the env vars on a backend deployment
+kubectl set env deployment/backend-core -n backstage-poc --list | grep APP_BASE_URL
+# Expected: APP_BASE_URL=http://<lb-dns>
+```
+
+#### Manual fallback — if the script timed out before the LB was ready
+
+```bash
+# 1. Wait for the NLB to get its DNS (re-run until you see a value)
+export LB_DNS=$(kubectl get svc envoy -n backstage-poc \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+echo "LB DNS: $LB_DNS"   # must not be empty before continuing
+
+# 2. Patch APP_BASE_URL one backend at a time and wait for each rollout
+for dep in backend-core backend-catalog backend-scaffolder backend-techdocs; do
+  echo "Patching $dep..."
+  kubectl set env deployment/"$dep" \
+    --namespace backstage-poc \
+    APP_BASE_URL="http://$LB_DNS" \
+    CORS_ORIGIN="http://$LB_DNS"
+  kubectl rollout status deployment/"$dep" --namespace backstage-poc --timeout 180s
+done
+```
+
+#### Open Backstage in your browser
+
+Once all backends are ready:
+
+```
+http://<LB_DNS>/
+```
+
+Replace `<LB_DNS>` with the value from:
+```bash
+kubectl get svc envoy -n backstage-poc \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+```
+
+#### Quick sanity checks
+
+```bash
+# All pods running?
+kubectl get pods -n backstage-poc
+
+# Backend-core health (internal check):
+kubectl exec -it deployment/backend-core -n backstage-poc -- \
+  wget -qO- http://localhost:7007/healthcheck
+
+# Catalog API responding through Envoy:
+curl -s http://$LB_DNS/api/catalog/entities | head -c 200
 ```
 
 ---
@@ -881,6 +951,24 @@ Requires rebuilding and re-pushing all 4 backend images (CMD changed). Re-run:
 ```
 
 **Status:** ✅ Done — images need to be rebuilt
+
+---
+
+### [2026-10-01] — Added post-deploy LB DNS step and fixed quick fill-in commands
+
+**Files changed:** `deploy-on-aws.md`
+
+**What changed:**
+- Added **Step 6** to the Deployment Workflow: how to get the Envoy NLB DNS, verify `APP_BASE_URL` was patched, manual fallback if the deploy script timed out, open Backstage in browser, and sanity-check curl commands
+- Updated the "Quick fill-in commands" section — removed the outdated YAML-patching approach for `<ENVOY_LB_DNS>`; the script now uses `kubectl set env` to patch running deployments, no YAML edits needed
+- Updated the note below the quick fill-in block to reflect that only `<ECR_REGISTRY>` modifies YAML files; LB DNS is patched live
+
+**Why:**
+The doc described `deploy-k8s.sh` as handling everything automatically but gave no guidance on what to do after, how to verify, or what to do if the 5-minute LB wait timed out.
+
+**AWS impact:** None — documentation only.
+
+**Status:** ✅ Done
 
 ---
 
