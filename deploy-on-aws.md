@@ -954,21 +954,114 @@ Requires rebuilding and re-pushing all 4 backend images (CMD changed). Re-run:
 
 ---
 
-### [2026-10-01] — Added post-deploy LB DNS step and fixed quick fill-in commands
+### [2026-10-01] — Fixed rolling update strategy on all Deployments
+
+**Files changed:**
+- `k8s/workloads/backend-core.yaml`
+- `k8s/workloads/backend-catalog.yaml`
+- `k8s/workloads/backend-scaffolder.yaml`
+- `k8s/workloads/backend-techdocs.yaml`
+- `k8s/workloads/frontend.yaml`
+- `k8s/workloads/envoy.yaml`
+
+**What changed:**
+Added `strategy` block to every Deployment:
+```yaml
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 0
+    maxUnavailable: 1
+```
+
+**Why:**
+Kubernetes default rolling update is `maxSurge: 1, maxUnavailable: 0` — it starts a **new pod first**, waits for it to be ready, then kills the old one. With memory-constrained nodes (both nodes nearly full), there was no room to schedule the extra pod. The rollout would hang with:
+```
+1 old replicas are pending termination...
+error: timed out waiting for the condition
+0/2 nodes are available: 1 Too many pods
+```
+With `maxSurge: 0, maxUnavailable: 1`, Kubernetes kills the old pod first (freeing memory), then starts the new one. One pod is briefly unavailable during rollout — acceptable for a POC.
+
+**AWS impact:** None. Scheduling change only.
+
+**Status:** ✅ Done
+
+---
+
+### [2026-10-01] — Fixed sequential APP_BASE_URL patching in deploy script
+
+**Files changed:** `scripts/deploy-k8s.sh`
+
+**What changed:**
+The `APP_BASE_URL` patching section was patching all 4 backends in a loop first, then waiting for all rollouts in a separate loop — triggering 4 simultaneous rolling restarts:
+```bash
+# OLD — 4 patches first, then 4 waits (simultaneous restarts)
+for dep in backend-core backend-catalog ...; do kubectl set env ... ; done
+for dep in backend-core backend-catalog ...; do wait_rollout ...; done
+```
+Fixed to patch one backend then immediately wait before moving to the next:
+```bash
+# NEW — patch then wait per service (sequential)
+for dep in backend-core backend-catalog ...; do
+  kubectl set env deployment/"$dep" ...
+  wait_rollout deployment "$dep" 180s
+done
+```
+
+**Why:**
+With `maxSurge: 0`, simultaneous rolling restarts on 4 backends still caused resource contention — each restart terminates the old pod and starts a new one, but doing all 4 at the same time floods the node with 4 new pods starting simultaneously. Sequential patching ensures one pod fully stabilises before the next starts.
+
+**AWS impact:** None.
+
+**Status:** ✅ Done
+
+---
+
+### [2026-10-01] — Frontend Dockerfile: add app-config.yaml to Docker build context
+
+**Files changed:** `packages/app/Dockerfile`
+
+**What changed:**
+Added `COPY app-config.yaml ./` before the `yarn workspace app build` step:
+```dockerfile
+COPY app-config.yaml ./          # ← added
+COPY packages/app ./packages/app
+RUN yarn workspace app build
+```
+
+**Why:**
+Backstage compiles `app-config.yaml` into the JavaScript bundle at build time. Values like `app.title`, `app.baseUrl` are read during `yarn workspace app build` and baked into the static JS files. Without the config file present during the Docker build, the compiled bundle has no config, and the browser sees:
+```
+Error: Missing required config value at 'app.title' in 'mock-config'
+```
+"mock-config" is Backstage's internal fallback used when no real config is found — it's missing all required fields, causing the app to fail immediately on load.
+
+The root `app-config.yaml` (with `app.title: Scaffolded Backstage App`) is the correct file to use at build time. The `app.baseUrl` value (`http://localhost:3000`) is wrong for EKS but only affects OAuth redirect URIs — all API calls use relative paths (`/api/...`) routed by Envoy, so the app functions correctly for the POC.
+
+**AWS impact:** Requires rebuilding and pushing the frontend image:
+```bash
+./scripts/build-push-ecr.sh --service frontend
+```
+
+**Status:** ✅ Done — image needs to be rebuilt
+
+---
+
+### [2026-10-01] — Added post-deploy verification step (Step 6) to deployment workflow
 
 **Files changed:** `deploy-on-aws.md`
 
 **What changed:**
-- Added **Step 6** to the Deployment Workflow: how to get the Envoy NLB DNS, verify `APP_BASE_URL` was patched, manual fallback if the deploy script timed out, open Backstage in browser, and sanity-check curl commands
-- Updated the "Quick fill-in commands" section — removed the outdated YAML-patching approach for `<ENVOY_LB_DNS>`; the script now uses `kubectl set env` to patch running deployments, no YAML edits needed
-- Updated the note below the quick fill-in block to reflect that only `<ECR_REGISTRY>` modifies YAML files; LB DNS is patched live
+- Added **Step 6** to the Deployment Workflow with full manual instructions: get Envoy NLB DNS, verify `APP_BASE_URL` patch, manual fallback if script timed out, how to open Backstage in browser, sanity-check curl commands
+- Updated the "Quick fill-in commands" section — removed outdated YAML-patching for `<ENVOY_LB_DNS>`; replaced with `kubectl set env` approach that patches running deployments live
 
 **Why:**
-The doc described `deploy-k8s.sh` as handling everything automatically but gave no guidance on what to do after, how to verify, or what to do if the 5-minute LB wait timed out.
+The doc said the deploy script "handles everything automatically" but gave no guidance on what to do after, how to verify, or what to do if the 5-minute LB DNS wait timed out.
 
 **AWS impact:** None — documentation only.
 
-**Status:** ✅ Done
+**Status:** ✅ Done (later superseded by nginx ingress switch — LB DNS step no longer needed)
 
 ---
 
@@ -1006,6 +1099,56 @@ Traffic flow after:  `internet → nginx ingress NLB → nginx ingress controlle
 
 ---
 
+### [2026-10-01] — Enabled HTTPS on nginx ingress (TLS + ssl-redirect)
+
+**Files changed:** `k8s/ingress.yaml`
+
+**What changed:**
+Added TLS configuration to the Ingress resource, matching the pattern used by the existing `backstage-ingress`:
+```yaml
+annotations:
+  nginx.ingress.kubernetes.io/ssl-redirect: "true"   # force HTTP → HTTPS
+spec:
+  tls:
+  - hosts:
+    - backstage-poc-aws.opstree.dev
+    secretName: backstage-poc-tls   # wildcard cert copied from backstage namespace
+  rules:
+  - host: backstage-poc-aws.opstree.dev
+    ...
+```
+
+**Why:**
+The existing `backstage-ingress` uses a manually created TLS secret (`backstage-tls`) — no cert-manager involved. The same wildcard certificate covers `backstage-poc-aws.opstree.dev`. Enabling HTTPS also fixes the browser error:
+```
+TypeError: globalThis.crypto.randomUUID is not a function
+```
+This error occurs because `crypto.randomUUID()` is a Web Crypto API method that browsers restrict to **secure contexts only** (HTTPS or localhost). On plain HTTP, the browser blocks it regardless of the app code. Switching to HTTPS makes the context secure and the API available.
+
+**What to do before applying:**
+1. Verify the cert is a wildcard:
+   ```bash
+   kubectl get secret backstage-tls -n backstage -o jsonpath='{.data.tls\.crt}' | \
+     base64 -d | openssl x509 -noout -subject -ext subjectAltName
+   ```
+2. Copy the TLS secret to the `backstage-poc` namespace (TLS secrets cannot be shared across namespaces):
+   ```bash
+   kubectl get secret backstage-tls -n backstage -o json \
+     | jq 'del(.metadata.namespace,.metadata.resourceVersion,.metadata.uid,.metadata.creationTimestamp,.metadata.annotations,.metadata.labels)' \
+     | jq '.metadata.name = "backstage-poc-tls"' \
+     | kubectl apply -n backstage-poc -f -
+   ```
+3. Apply the updated ingress:
+   ```bash
+   kubectl apply -f k8s/ingress.yaml
+   ```
+
+**AWS impact:** None. TLS is terminated at the nginx ingress controller pod — no AWS certificate changes needed.
+
+**Status:** ✅ Done in code — TLS secret copy pending on bastion
+
+---
+
 ### [YYYY-MM-DD] — Template for future entries
 
 **Files changed:**
@@ -1027,10 +1170,14 @@ Traffic flow after:  `internet → nginx ingress NLB → nginx ingress controlle
 - [x] **Node IAM role ECR** — `AmazonEC2ContainerRegistryFullAccess` attached
 - [x] **Node tolerations** — added to all workload manifests
 - [x] **EBS CSI driver** — no longer needed (switched to emptyDir for POC)
-- [ ] **Rebuild + push images** — CMD changed in all 4 backend Dockerfiles (single `--config` flag)
-- [ ] **SSM parameters** — create BACKEND_SECRET, GITHUB_TOKEN, POSTGRES_PASSWORD in `/backstage/poc/`
-- [ ] **Replace `<ECR_REGISTRY>`** in all `k8s/workloads/*.yaml` files on bastion
-- [ ] **Create namespace** — `kubectl apply -f k8s/namespace.yaml`
-- [ ] **Create `backstage-secrets`** K8s secret in `backstage-poc` namespace
-- [ ] **Run `./scripts/deploy-k8s.sh`** and verify all pods come up healthy
-- [ ] **Get Envoy LB DNS** — verify `APP_BASE_URL` is patched and Backstage UI loads
+- [x] **Rolling update strategy** — `maxSurge: 0, maxUnavailable: 1` added to all 6 Deployments
+- [x] **Ingress** — `k8s/ingress.yaml` applied, POC reachable at `backstage-poc-aws.opstree.dev`
+- [x] **Envoy NLB decommissioned** — Envoy Service changed to ClusterIP; shared NLB now handles ingress
+- [ ] **Rebuild frontend image** — `COPY app-config.yaml` added to Dockerfile; run `./scripts/build-push-ecr.sh --service frontend` on Mac
+- [ ] **Rebuild backend images** — CMD changed (single `--config` flag); run `./scripts/build-push-ecr.sh` on Mac
+- [ ] **Copy TLS secret** — `kubectl get secret backstage-tls -n backstage ...` → copy to `backstage-poc` namespace as `backstage-poc-tls`
+- [ ] **Apply TLS ingress** — `kubectl apply -f k8s/ingress.yaml` after secret is copied; verify PORTS shows `80, 443`
+- [ ] **DNS CNAME** — add `backstage-poc-aws.opstree.dev` pointing to the shared NLB hostname
+- [ ] **SSM parameters** — create `BACKEND_SECRET`, `GITHUB_TOKEN`, `POSTGRES_PASSWORD` in `/backstage/poc/`
+- [ ] **Create `backstage-secrets`** K8s secret in `backstage-poc` namespace from SSM values
+- [ ] **Verify Backstage UI** — open `https://backstage-poc-aws.opstree.dev` and confirm no browser errors
