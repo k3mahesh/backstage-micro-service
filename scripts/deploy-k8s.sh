@@ -155,24 +155,37 @@ wait_rollout() {
 }
 
 # ── 1. Namespace ──────────────────────────────────────────────────────────────
-step "1/7  Namespace"
+step "1/6  Namespace"
 kubectl apply -f k8s/namespace.yaml
 ok "Namespace '$NAMESPACE' ready"
 
 # ── 2. ConfigMaps ─────────────────────────────────────────────────────────────
-step "2/7  ConfigMaps"
+step "2/6  ConfigMaps"
 for f in k8s/configmaps/*.yaml; do
   apply "$f" "$(basename $f)"
 done
 ok "All ConfigMaps applied"
 
-# ── 3. Storage (PVCs) ─────────────────────────────────────────────────────────
-step "3/7  Storage"
-apply k8s/storage/pvcs.yaml "pvcs.yaml"
-ok "PVCs applied"
+# ── 3. Clean up stuck pods from any previous run ─────────────────────────────
+step "3/6  Cleaning up stuck pods"
+if [[ $DRY_RUN == false ]]; then
+  STUCK=$(kubectl get pods --namespace "$NAMESPACE" \
+    --field-selector='status.phase in (Pending,Failed)' \
+    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+  if [[ -n "$STUCK" ]]; then
+    log "  Deleting stuck pods: $STUCK"
+    kubectl delete pods --namespace "$NAMESPACE" \
+      --field-selector='status.phase in (Pending,Failed)' --ignore-not-found
+    ok "  Stuck pods removed"
+  else
+    ok "  No stuck pods found"
+  fi
+else
+  warn "  (dry-run) Skipping stuck pod cleanup"
+fi
 
 # ── 4. Data layer: PostgreSQL + Redis ─────────────────────────────────────────
-step "4/7  Data layer (postgres + redis)"
+step "4/6  Data layer (postgres + redis)"
 apply k8s/workloads/postgres.yaml "postgres.yaml"
 apply k8s/workloads/redis.yaml    "redis.yaml"
 
@@ -180,7 +193,7 @@ wait_rollout statefulset postgres 240s
 wait_rollout statefulset redis    120s
 
 # ── 5. Application backends ───────────────────────────────────────────────────
-step "5/7  Application backends"
+step "5/6  Application backends"
 apply k8s/workloads/backend-core.yaml      "backend-core.yaml"
 apply k8s/workloads/backend-catalog.yaml   "backend-catalog.yaml"
 apply k8s/workloads/backend-scaffolder.yaml "backend-scaffolder.yaml"
@@ -192,12 +205,12 @@ wait_rollout deployment backend-scaffolder 180s
 wait_rollout deployment backend-techdocs   180s
 
 # ── 6. Frontend ───────────────────────────────────────────────────────────────
-step "6/7  Frontend"
+step "6/6  Frontend + Envoy"
 apply k8s/workloads/frontend.yaml "frontend.yaml"
 wait_rollout deployment frontend 120s
 
 # ── 7. Envoy ingress ──────────────────────────────────────────────────────────
-step "7/7  Envoy ingress (LoadBalancer)"
+step "     Envoy ingress (LoadBalancer)"
 apply k8s/workloads/envoy.yaml "envoy.yaml"
 wait_rollout deployment envoy 120s
 

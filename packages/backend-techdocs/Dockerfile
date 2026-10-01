@@ -46,10 +46,8 @@ COPY --from=build --chown=node:node /app/packages/backend-techdocs/dist/index.cj
 COPY --from=build --chown=node:node /app/packages/backend-techdocs/dist/index.cjs.js.map ./packages/backend-techdocs/dist/index.cjs.js.map
 COPY --from=build --chown=node:node /app/packages/backend-techdocs/package.json ./packages/backend-techdocs/package.json
 
-COPY --chown=node:node app-config.yaml app-config.production.yaml ./
+COPY --chown=node:node app-config.yaml ./
 
 EXPOSE 7010
 
-CMD ["node", "packages/backend-techdocs", \
-     "--config", "app-config.yaml", \
-     "--config", "app-config.production.yaml"]
+CMD ["node", "packages/backend-techdocs", "--config", "app-config.yaml"]

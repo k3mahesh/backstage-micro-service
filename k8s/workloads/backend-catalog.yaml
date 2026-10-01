@@ -65,9 +65,6 @@ spec:
         - name: app-config
           mountPath: /app/app-config.yaml
           subPath: app-config.yaml
-        - name: app-config-production
-          mountPath: /app/app-config.production.yaml
-          subPath: app-config-production.yaml
         resources:
           requests:
             cpu: 200m
@@ -89,9 +86,6 @@ spec:
       - name: app-config
         configMap:
           name: app-config
-      - name: app-config-production
-        configMap:
-          name: app-config-production
 ---
 apiVersion: v1
 kind: Service

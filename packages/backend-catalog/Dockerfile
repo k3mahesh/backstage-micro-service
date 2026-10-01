@@ -45,10 +45,8 @@ COPY --from=build --chown=node:node /app/packages/backend-catalog/dist/index.cjs
 COPY --from=build --chown=node:node /app/packages/backend-catalog/package.json ./packages/backend-catalog/package.json
 
 COPY --chown=node:node examples ./examples
-COPY --chown=node:node app-config.yaml app-config.production.yaml ./
+COPY --chown=node:node app-config.yaml ./
 
 EXPOSE 7008
 
-CMD ["node", "packages/backend-catalog", \
-     "--config", "app-config.yaml", \
-     "--config", "app-config.production.yaml"]
+CMD ["node", "packages/backend-catalog", "--config", "app-config.yaml"]

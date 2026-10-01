@@ -1,7 +1,8 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # ConfigMap: app-config
-# Mirrors the root app-config.yaml, mounted into every backend pod at
-# /app/app-config.yaml to override the copy baked into the image.
+# Single source of truth for all environments.
+# Environment-specific values are injected via env vars from each Deployment.
+# Mounted into every backend pod at /app/app-config.yaml.
 # ──────────────────────────────────────────────────────────────────────────────
 apiVersion: v1
 kind: ConfigMap
@@ -12,7 +13,7 @@ data:
   app-config.yaml: |
     app:
       title: Scaffolded Backstage App
-      baseUrl: http://localhost:3000
+      baseUrl: ${APP_BASE_URL}
       packages: all
 
     organization:
@@ -22,20 +23,24 @@ data:
       auth:
         keys:
           - secret: ${BACKEND_SECRET}
-      baseUrl: http://localhost:7007
+      baseUrl: ${BACKEND_BASE_URL}
       listen:
-        port: 7007
+        port: ${BACKEND_LISTEN_PORT}
       csp:
         connect-src: ["'self'", 'http:', 'https:']
       cors:
         origin:
-          - http://localhost:3000
-          - ${CORS_ORIGIN}
+          - ${APP_BASE_URL}
         methods: [GET, HEAD, PATCH, POST, PUT, DELETE]
         credentials: true
       database:
-        client: better-sqlite3
-        connection: ':memory:'
+        client: pg
+        connection:
+          host: ${POSTGRES_HOST}
+          port: ${POSTGRES_PORT}
+          user: ${POSTGRES_USER}
+          password: ${POSTGRES_PASSWORD}
+          database: ${POSTGRES_DB}
       actions:
         pluginSources:
           - auth
@@ -58,7 +63,8 @@ data:
 
     auth:
       providers:
-        guest: {}
+        guest:
+          dangerouslyAllowOutsideDevelopment: true
 
     scaffolder: {}
 
@@ -70,13 +76,13 @@ data:
         - allow: [Component, System, API, Resource, Location]
       locations:
         - type: file
-          target: ../../examples/entities.yaml
+          target: ./examples/entities.yaml
         - type: file
-          target: ../../examples/template/template.yaml
+          target: ./examples/template/template.yaml
           rules:
             - allow: [Template]
         - type: file
-          target: ../../examples/org.yaml
+          target: ./examples/org.yaml
           rules:
             - allow: [User, Group]
 
@@ -88,6 +94,6 @@ data:
     techdocs:
       builder: 'local'
       generator:
-        runIn: 'docker'
+        runIn: 'local'
       publisher:
         type: 'local'

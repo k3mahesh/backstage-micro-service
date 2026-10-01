@@ -44,10 +44,8 @@ COPY --from=build --chown=node:node /app/packages/backend-scaffolder/dist/index.
 COPY --from=build --chown=node:node /app/packages/backend-scaffolder/dist/index.cjs.js.map ./packages/backend-scaffolder/dist/index.cjs.js.map
 COPY --from=build --chown=node:node /app/packages/backend-scaffolder/package.json ./packages/backend-scaffolder/package.json
 
-COPY --chown=node:node app-config.yaml app-config.production.yaml ./
+COPY --chown=node:node app-config.yaml ./
 
 EXPOSE 7009
 
-CMD ["node", "packages/backend-scaffolder", \
-     "--config", "app-config.yaml", \
-     "--config", "app-config.production.yaml"]
+CMD ["node", "packages/backend-scaffolder", "--config", "app-config.yaml"]
