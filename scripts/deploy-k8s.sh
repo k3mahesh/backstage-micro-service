@@ -192,27 +192,34 @@ apply k8s/workloads/redis.yaml    "redis.yaml"
 wait_rollout statefulset postgres 240s
 wait_rollout statefulset redis    120s
 
-# ── 5. Application backends ───────────────────────────────────────────────────
-step "5/6  Application backends"
-apply k8s/workloads/backend-core.yaml      "backend-core.yaml"
-apply k8s/workloads/backend-catalog.yaml   "backend-catalog.yaml"
+# ── 5. Application backends — one at a time to avoid resource crunch ──────────
+# Each service is applied and waited on before the next one starts.
+# This prevents multiple pods competing for memory simultaneously.
+step "5/6  Application backends (sequential — one at a time)"
+
+log "  [1/6] backend-core"
+apply k8s/workloads/backend-core.yaml "backend-core.yaml"
+wait_rollout deployment backend-core 240s
+
+log "  [2/6] backend-catalog"
+apply k8s/workloads/backend-catalog.yaml "backend-catalog.yaml"
+wait_rollout deployment backend-catalog 240s
+
+log "  [3/6] backend-scaffolder"
 apply k8s/workloads/backend-scaffolder.yaml "backend-scaffolder.yaml"
-apply k8s/workloads/backend-techdocs.yaml  "backend-techdocs.yaml"
+wait_rollout deployment backend-scaffolder 240s
 
-wait_rollout deployment backend-core       180s
-wait_rollout deployment backend-catalog    180s
-wait_rollout deployment backend-scaffolder 180s
-wait_rollout deployment backend-techdocs   180s
+log "  [4/6] backend-techdocs"
+apply k8s/workloads/backend-techdocs.yaml "backend-techdocs.yaml"
+wait_rollout deployment backend-techdocs 240s
 
-# ── 6. Frontend ───────────────────────────────────────────────────────────────
-step "6/6  Frontend + Envoy"
+log "  [5/6] frontend"
 apply k8s/workloads/frontend.yaml "frontend.yaml"
-wait_rollout deployment frontend 120s
+wait_rollout deployment frontend 180s
 
-# ── 7. Envoy ingress ──────────────────────────────────────────────────────────
-step "     Envoy ingress (LoadBalancer)"
+log "  [6/6] envoy"
 apply k8s/workloads/envoy.yaml "envoy.yaml"
-wait_rollout deployment envoy 120s
+wait_rollout deployment envoy 180s
 
 # ── Wait for Envoy LoadBalancer DNS ──────────────────────────────────────────
 if [[ $DRY_RUN == false && $SKIP_WAIT == false ]]; then
@@ -239,8 +246,8 @@ if [[ $DRY_RUN == false && $SKIP_WAIT == false ]]; then
     warn "Then patch backends:"
     warn "  LB_DNS=<dns> ./scripts/deploy-k8s.sh --patch-url"
   else
-    # ── Patch APP_BASE_URL in all backends ──────────────────────────────────
-    step "Patching APP_BASE_URL in all backend deployments"
+    # ── Patch APP_BASE_URL in all backends — one at a time ──────────────────
+    step "Patching APP_BASE_URL in all backend deployments (sequential)"
     APP_URL="http://$LB_DNS"
     for dep in backend-core backend-catalog backend-scaffolder backend-techdocs; do
       log "  Patching $dep → APP_BASE_URL=$APP_URL"
@@ -248,11 +255,7 @@ if [[ $DRY_RUN == false && $SKIP_WAIT == false ]]; then
         --namespace "$NAMESPACE" \
         APP_BASE_URL="$APP_URL" \
         CORS_ORIGIN="$APP_URL"
-      ok "  $dep patched"
-    done
-
-    log "Waiting for backends to restart with new URL..."
-    for dep in backend-core backend-catalog backend-scaffolder backend-techdocs; do
+      ok "  $dep patched — waiting for rollout..."
       wait_rollout deployment "$dep" 180s
     done
     ok "All backends running with APP_BASE_URL=$APP_URL"
